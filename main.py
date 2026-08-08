@@ -2,7 +2,7 @@
 """
 DCA Day Trading Bot - Main Entry Point
 Hybrid DCA Strategy with Multi-Timeframe Analysis & Signal Manager
-Version: 1.0.0 - Signal Manager Integration
+Version: 1.0.1 - Fixed DCA Logic with Time Delays
 """
 
 import os
@@ -70,6 +70,7 @@ EMOJI = {
     "DB": "🍃",
     "HEARTBEAT": "💓",
     "SCAN": "🔄",
+    "COOLDOWN": "⏱️",
 }
 
 # Global state
@@ -103,15 +104,16 @@ bot_stats: Dict[str, Any] = {
     "last_status_sent": None,
     "last_heartbeat": None,
     "last_price_time": None,
+    "symbol_last_entry": {},  # Track last entry time per symbol
 }
 
 # ========== POSITION SIZE ==========
 POSITION_SIZE_USD = config.dca.position_size_usd
 
 # ========== SIGNAL CONFIGURATION ==========
-MAX_PENDING_SIGNALS_PER_SYMBOL = 2
-SIGNAL_EXPIRY_SECONDS = 120
-SIGNAL_COOLDOWN_SECONDS = 60
+MAX_PENDING_SIGNALS_PER_SYMBOL = 1  # Reduce to 1 to prevent duplicates
+SIGNAL_EXPIRY_SECONDS = 300  # Increase to 5 minutes
+SIGNAL_COOLDOWN_SECONDS = 300  # Increase to 5 minutes
 
 # ========== STATUS REPORTING ==========
 # Send status once per day at a specific time (e.g., 00:05 UTC)
@@ -224,16 +226,26 @@ class BinanceDataClient:
 
 def can_generate_signal(symbol: str) -> Tuple[bool, str]:
     """Check if we can generate a new signal for a symbol."""
+    # Check if symbol is already locked
     if signal_manager.is_symbol_locked(symbol):
         return False, "Symbol already locked with active signal"
 
+    # Check pending signals count
     pending = signal_manager.get_pending_signals(symbol)
     if len(pending) >= MAX_PENDING_SIGNALS_PER_SYMBOL:
         return False, f"Too many pending signals ({len(pending)})"
 
+    # Check if there's a recent signal (cooldown)
     recent_signals = signal_manager.get_recent_signals(symbol, seconds=SIGNAL_COOLDOWN_SECONDS)
     if recent_signals:
         return False, f"Cooldown active ({SIGNAL_COOLDOWN_SECONDS}s)"
+
+    # Check if we have a recent entry for this symbol
+    if symbol in bot_stats['symbol_last_entry']:
+        last_entry = bot_stats['symbol_last_entry'][symbol]
+        time_since = (datetime.now() - last_entry).total_seconds()
+        if time_since < SIGNAL_COOLDOWN_SECONDS:
+            return False, f"Symbol cooldown: {int(SIGNAL_COOLDOWN_SECONDS - time_since)}s remaining"
 
     return True, "OK"
 
@@ -307,8 +319,8 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         main_logger.debug(f"✅ {symbol} price: ${current_price:.2f}")
 
         # 4H data (HTF) - Reduced minimum required to 15 candles
-        df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)  # Reduced limit
-        if df_4h.empty or len(df_4h) < 15:  # Changed from 30 to 15
+        df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)
+        if df_4h.empty or len(df_4h) < 15:
             main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles (need 15)")
             return {"action": "none", "reason": "Insufficient 4H data"}
 
@@ -344,7 +356,7 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         tdi_zone = market_context.get('tdi_zone', 'NEUTRAL')
         bb_position = market_context.get('bb_position', 0.5)
 
-        # Log detailed signal analysis (ALWAYS show this)
+        # Log detailed signal analysis
         main_logger.info(
             f"{EMOJI['SCAN']} {symbol}: "
             f"Price=${current_price:.2f} | "
@@ -355,6 +367,18 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
         # ===== 3. CHECK ACTIVE POSITION =====
         if symbol in dca_strategy.active_positions:
+            position = dca_strategy.active_positions[symbol]
+            
+            # Check if we've recently added a DCA level (cooldown)
+            if position.last_dca_time:
+                time_since_dca = (datetime.now() - position.last_dca_time).total_seconds()
+                if time_since_dca < dca_strategy.MIN_DCA_INTERVAL_SECONDS:
+                    remaining = int(dca_strategy.MIN_DCA_INTERVAL_SECONDS - time_since_dca)
+                    main_logger.debug(f"{EMOJI['COOLDOWN']} {symbol}: DCA cooldown: {remaining}s remaining")
+                    # Don't process exit/entry further, wait for cooldown
+                    return {"action": "cooldown", "reason": f"Cooldown: {remaining}s"}
+
+            # Check exit
             exit_check = dca_strategy.check_exit(symbol, current_price, datetime.now())
 
             if exit_check['should_exit']:
@@ -367,68 +391,73 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     symbol=symbol,
                     signal_type="exit",
                     entry_price=exit_check['exit_price'],
-                    direction=dca_strategy.active_positions[symbol].direction,
+                    direction=position.direction,
                     confidence=1.0,
-                    dca_level=dca_strategy.active_positions[symbol].dca_level,
+                    dca_level=position.dca_level,
                     stop_loss=0,
                     market_context=market_context
                 )
 
                 if exit_signal and signal_manager.activate_signal(exit_signal.signal_id):
-                    position = dca_strategy.exit_position(
+                    position_result = dca_strategy.exit_position(
                         symbol,
                         exit_check['exit_price'],
                         exit_check['sell_percent']
                     )
 
-                    if position:
+                    if position_result:
                         signal_manager.execute_signal(exit_signal.signal_id, exit_check['exit_price'])
 
                         bot_stats['dca_exits'] += 1
                         bot_stats['active_positions'] = len(dca_strategy.active_positions)
                         bot_stats['signals_executed'] += 1
 
-                        if position.realized_pnl > 0:
+                        if position_result.realized_pnl > 0:
                             bot_stats['wins'] += 1
                             bot_stats['signal_outcomes']['profitable'] += 1
                         else:
                             bot_stats['losses'] += 1
                             bot_stats['signal_outcomes']['losing'] += 1
 
-                        bot_stats['total_pnl'] += position.realized_pnl
+                        bot_stats['total_pnl'] += position_result.realized_pnl
                         bot_stats['daily_pnl'] = dca_strategy.daily_pnl
-                        bot_stats['signal_outcomes']['total_pnl'] += position.realized_pnl
+                        bot_stats['signal_outcomes']['total_pnl'] += position_result.realized_pnl
+
+                        # Remove symbol from last entry tracking
+                        if symbol in bot_stats['symbol_last_entry']:
+                            del bot_stats['symbol_last_entry'][symbol]
 
                         signal_manager.remove_signal(symbol)
 
                         if telegram_bot.enabled:
                             telegram_bot.send_dca_exit(
                                 symbol=symbol,
-                                entry_price=position.entry_price,
+                                entry_price=position_result.entry_price,
                                 exit_price=exit_check['exit_price'],
-                                pnl=position.realized_pnl,
-                                pnl_percent=position.realized_pnl / position.total_cost * 100 if position.total_cost > 0 else 0,
+                                pnl=position_result.realized_pnl,
+                                pnl_percent=position_result.realized_pnl / position_result.total_cost * 100 if position_result.total_cost > 0 else 0,
                                 reason=exit_check['reason'],
-                                quantity=position.quantity,
-                                dca_level=position.dca_level,
-                                total_levels=position.total_dca_levels,
+                                quantity=position_result.quantity,
+                                dca_level=position_result.dca_level,
+                                total_levels=position_result.total_dca_levels,
                                 exit_type="PARTIAL" if exit_check['sell_percent'] < 1.0 else "FULL"
                             )
 
                         main_logger.info(
                             f"{EMOJI['EXIT']} EXIT: {symbol} @ ${exit_check['exit_price']:.4f} | "
                             f"Reason: {exit_check['reason']} | "
-                            f"PnL: ${position.realized_pnl:.2f} ({position.realized_pnl/position.total_cost*100:+.2f}%)"
+                            f"PnL: ${position_result.realized_pnl:.2f} ({position_result.realized_pnl/position_result.total_cost*100:+.2f}%)"
                         )
 
                         return {
                             "action": "exit",
                             "price": exit_check['exit_price'],
-                            "pnl": position.realized_pnl,
+                            "pnl": position_result.realized_pnl,
                             "reason": exit_check['reason'],
                             "signal_id": exit_signal.signal_id
                         }
 
+            # Check next DCA level
             entry_check = dca_strategy.should_enter_dca(symbol, current_price, df_15m, market_context)
 
             if entry_check['should_enter']:
@@ -437,9 +466,10 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     f"Level {entry_check['level']} @ ${entry_check['entry_price']:.4f}"
                 )
 
+                # Check if we can generate a signal
                 can_gen, reason = can_generate_signal(symbol)
                 if not can_gen:
-                    main_logger.debug(f"⏳ Signal blocked for {symbol}: {reason}")
+                    main_logger.debug(f"{EMOJI['PENDING']} Signal blocked for {symbol}: {reason}")
                     return {"action": "pending", "reason": reason}
 
                 entry_signal = create_dca_signal(
@@ -469,6 +499,9 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
                     if success:
                         signal_manager.execute_signal(entry_signal.signal_id, entry_check['entry_price'])
+
+                        # Update last entry time for this symbol
+                        bot_stats['symbol_last_entry'][symbol] = datetime.now()
 
                         bot_stats['dca_entries'] += 1
                         bot_stats['active_positions'] = len(dca_strategy.active_positions)
@@ -509,9 +542,10 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
         # ===== 4. NO POSITION - CHECK NEW ENTRY =====
         else:
+            # Check if we can generate a signal
             can_gen, reason = can_generate_signal(symbol)
             if not can_gen:
-                main_logger.debug(f"⏳ New position blocked for {symbol}: {reason}")
+                main_logger.debug(f"{EMOJI['PENDING']} New position blocked for {symbol}: {reason}")
                 return {"action": "pending", "reason": reason}
 
             entry_check = dca_strategy.should_enter_dca(symbol, current_price, df_15m, market_context)
@@ -550,6 +584,9 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     if success:
                         signal_manager.execute_signal(entry_signal.signal_id, entry_check['entry_price'])
 
+                        # Update last entry time for this symbol
+                        bot_stats['symbol_last_entry'][symbol] = datetime.now()
+
                         bot_stats['dca_entries'] += 1
                         bot_stats['active_positions'] = len(dca_strategy.active_positions)
                         bot_stats['signals_executed'] += 1
@@ -587,6 +624,7 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                             "signal_id": entry_signal.signal_id
                         }
 
+        # Clean up expired signals
         signal_manager.check_expired_signals()
 
         pending_signals = len(signal_manager.get_pending_signals())
@@ -644,6 +682,7 @@ def send_dca_status():
 • Active Signals: <b>{len(signal_manager.active_signals)}</b>
 • Pending: <b>{len(signal_manager.get_pending_signals())}</b>
 • Generated: <b>{signal_stats.get('total_signals', 0)}</b>
+• Duplicates Prevented: <b>{bot_stats.get('duplicate_signals_prevented', 0)}</b>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -695,6 +734,7 @@ def send_daily_performance_summary():
 • Executed: <b>{bot_stats['signals_executed']}</b>
 • Rejected: <b>{bot_stats['signals_rejected']}</b>
 • Expired: <b>{bot_stats['signals_expired']}</b>
+• Duplicates Prevented: <b>{bot_stats['duplicate_signals_prevented']}</b>
 
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
@@ -728,7 +768,8 @@ def log_heartbeat(cycle_count: int):
         f"Positions: {active_positions} | "
         f"Signals: {active_signals} active, {pending_signals} pending | "
         f"Daily PnL: ${dca_strategy.daily_pnl:.2f} | "
-        f"Errors: {errors}"
+        f"Errors: {errors} | "
+        f"Duplicates Blocked: {bot_stats['duplicate_signals_prevented']}"
     )
 
     bot_stats['last_heartbeat'] = now.isoformat()
@@ -767,6 +808,7 @@ def run_processing_loop():
     main_logger.info(f"{EMOJI['INFO']} DCA Levels: {dca_strategy.DCA_LEVELS}")
     main_logger.info(f"{EMOJI['INFO']} Stop Loss: {dca_strategy.STOP_LOSS_PERCENT*100:.1f}%")
     main_logger.info(f"{EMOJI['INFO']} Exit Time: {dca_strategy.EXIT_HOUR:02d}:{dca_strategy.EXIT_MINUTE:02d} UTC")
+    main_logger.info(f"{EMOJI['INFO']} Min DCA Interval: {dca_strategy.MIN_DCA_INTERVAL_SECONDS}s")
     main_logger.info(f"{EMOJI['SIGNAL']} Signal Manager: Active")
     main_logger.info(f"{EMOJI['INFO']} Status Reports: Daily at {STATUS_HOUR:02d}:{STATUS_MINUTE:02d} UTC")
     main_logger.info(f"{EMOJI['HEARTBEAT']} Heartbeat every {HEARTBEAT_INTERVAL_CYCLES} cycles (~1 minute)")
@@ -883,7 +925,6 @@ class HealthHandler(BaseHTTPRequestHandler):
     def _handle_health(self):
         signal_stats = signal_manager.get_stats()
 
-        # Convert datetime objects to strings for JSON serialization
         status = {
             "status": "healthy" if running else "stopped",
             "timestamp": datetime.now().isoformat(),
@@ -898,18 +939,19 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "executed_signals": signal_stats.get('executed_signals', 0),
                 "rejected_signals": signal_stats.get('rejected_signals', 0),
                 "expired_signals": signal_stats.get('expired_signals', 0),
+                "duplicate_signals_prevented": signal_stats.get('duplicate_signals_prevented', 0),
             },
             "strategy": {
                 "dca_levels": dca_strategy.DCA_LEVELS,
                 "stop_loss": dca_strategy.STOP_LOSS_PERCENT,
                 "exit_hour": dca_strategy.EXIT_HOUR,
+                "min_dca_interval": dca_strategy.MIN_DCA_INTERVAL_SECONDS,
             }
         }
         is_healthy = status['status'] == 'healthy'
         self.send_response(200 if is_healthy else 503)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        # Use custom serializer for datetime
         self.wfile.write(json.dumps(status, indent=2, default=json_serializer).encode())
 
     def _handle_metrics(self):
@@ -928,6 +970,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             f"signal_executed {signal_stats.get('executed_signals', 0)}",
             f"signal_rejected {signal_stats.get('rejected_signals', 0)}",
             f"signal_expired {signal_stats.get('expired_signals', 0)}",
+            f"signal_duplicates_prevented {signal_stats.get('duplicate_signals_prevented', 0)}",
         ]
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain')
@@ -940,14 +983,6 @@ class HealthHandler(BaseHTTPRequestHandler):
             active_signals = signal_manager.get_all_active_signals()
             pending_signals = signal_manager.get_pending_signals()
             signal_stats = signal_manager.get_stats()
-
-            # Convert datetime objects to strings
-            def convert_signal(s):
-                result = dict(s)
-                for key in ['entry_time', 'created_at', 'expires_at', 'executed_at']:
-                    if key in result and result[key] and isinstance(result[key], datetime):
-                        result[key] = result[key].isoformat()
-                return result
 
             status = {
                 "timestamp": datetime.now().isoformat(),
@@ -1047,6 +1082,7 @@ def main():
     main_logger.info(f"  - Executed: {signal_stats.get('executed_signals', 0)}")
     main_logger.info(f"  - Rejected: {signal_stats.get('rejected_signals', 0)}")
     main_logger.info(f"  - Expired: {signal_stats.get('expired_signals', 0)}")
+    main_logger.info(f"  - Duplicates Prevented: {signal_stats.get('duplicate_signals_prevented', 0)}")
 
     main_logger.info(f"{EMOJI['STOP']} Shutting down...")
 

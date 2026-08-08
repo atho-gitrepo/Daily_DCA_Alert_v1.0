@@ -93,59 +93,69 @@ class SignalManager:
         logger.info("SignalManager initialized")
 
     def create_signal(self, symbol: str, signal_type: SignalType,
-                      direction: str, price: float, quantity: float,
-                      priority: SignalPriority = SignalPriority.NORMAL,
-                      dca_level: int = 1, stop_loss: Optional[float] = None,
-                      confidence: float = 0.5, reason: str = "",
-                      metadata: Optional[Dict] = None,
-                      expires_in_seconds: int = 120) -> Optional[TradingSignal]:
-        """
-        Create a new trading signal with deduplication.
-        """
-        with self._lock:
-            # Check for duplicate signals
-            if self._is_duplicate(symbol, signal_type, direction, dca_level):
+                  direction: str, price: float, quantity: float,
+                  priority: SignalPriority = SignalPriority.NORMAL,
+                  dca_level: int = 1, stop_loss: Optional[float] = None,
+                  confidence: float = 0.5, reason: str = "",
+                  metadata: Optional[Dict] = None,
+                  expires_in_seconds: int = 120) -> Optional[TradingSignal]:
+    """
+    Create a new trading signal with deduplication.
+    """
+    with self._lock:
+        # Check for duplicate signals - STRONGER DEDUPLICATION
+        if self._is_duplicate(symbol, signal_type, direction, dca_level):
+            self.stats["duplicate_signals_prevented"] += 1
+            logger.warning(f"Duplicate signal prevented for {symbol} {signal_type.value} Level {dca_level}")
+            return None
+
+        # Check if there's already an active signal for this symbol and level
+        for sig in self.active_signals.values():
+            if (sig.symbol == symbol and
+                sig.signal_type == signal_type and
+                sig.dca_level == dca_level and
+                sig.status in [SignalStatus.PENDING, SignalStatus.ACTIVE]):
                 self.stats["duplicate_signals_prevented"] += 1
-                logger.warning(f"Duplicate signal prevented for {symbol} {signal_type.value}")
+                logger.warning(f"Active signal already exists for {symbol} Level {dca_level}")
                 return None
 
-            # Generate unique ID
-            signal_id = f"{symbol}_{signal_type.value}_{uuid.uuid4().hex[:8]}"
+        # Generate unique ID
+        signal_id = f"{symbol}_{signal_type.value}_{uuid.uuid4().hex[:8]}"
 
-            # Calculate expiration
-            created_at = datetime.now()
-            expires_at = created_at + timedelta(seconds=expires_in_seconds)
+        # Calculate expiration
+        created_at = datetime.now()
+        expires_at = created_at + timedelta(seconds=expires_in_seconds)
 
-            # Create signal
-            signal = TradingSignal(
-                signal_id=signal_id,
-                symbol=symbol,
-                signal_type=signal_type,
-                direction=direction,
-                price=price,
-                quantity=quantity,
-                priority=priority,
-                status=SignalStatus.PENDING,
-                created_at=created_at,
-                expires_at=expires_at,
-                dca_level=dca_level,
-                stop_loss=stop_loss,
-                confidence=confidence,
-                reason=reason,
-                metadata=metadata or {}
-            )
+        # Create signal
+        signal = TradingSignal(
+            signal_id=signal_id,
+            symbol=symbol,
+            signal_type=signal_type,
+            direction=direction,
+            price=price,
+            quantity=quantity,
+            priority=priority,
+            status=SignalStatus.PENDING,
+            created_at=created_at,
+            expires_at=expires_at,
+            dca_level=dca_level,
+            stop_loss=stop_loss,
+            confidence=confidence,
+            reason=reason,
+            metadata=metadata or {}
+        )
 
-            # Store signal
-            self.pending_signals[signal_id] = signal
-            self.stats["total_signals"] += 1
+        # Store signal
+        self.pending_signals[signal_id] = signal
+        self.stats["total_signals"] += 1
 
-            # Track by symbol
-            if symbol not in self._symbol_signals:
-                self._symbol_signals[symbol] = set()
-            self._symbol_signals[symbol].add(signal_id)
+        # Track by symbol
+        if symbol not in self._symbol_signals:
+            self._symbol_signals[symbol] = set()
+        self._symbol_signals[symbol].add(signal_id)
 
-            logger.debug(f"Signal created: {signal_id} for {symbol}")
-            return signal
+        logger.debug(f"Signal created: {signal_id} for {symbol} Level {dca_level}")
+        return signal
 
     def _is_duplicate(self, symbol: str, signal_type: SignalType,
                       direction: str, dca_level: int) -> bool:

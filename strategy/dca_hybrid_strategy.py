@@ -1,7 +1,7 @@
 """
 Hybrid DCA Day Trading Strategy
 Combines Super TDI + Bollinger Bands + Multi-Timeframe for DCA entries
-Version: 1.0.0
+Version: 1.0.1 - FIXED DCA Logic with time delays
 """
 
 import sys
@@ -90,6 +90,8 @@ class DCAPosition:
     entry_score: float = 0.0
     direction_confidence: float = 0.0
     direction_reason: str = ""
+    last_dca_time: Optional[datetime] = None  # Track last DCA time
+    dca_count: int = 1  # Track number of DCA entries
 
 
 class DCAHybridStrategy:
@@ -126,6 +128,9 @@ class DCAHybridStrategy:
         self.MIN_HTF_ALIGNMENT = config.dca.min_htf_alignment
         self.MIN_LTF_CONFIRMATION = config.dca.min_ltf_confirmation
 
+        # DCA Time Delay (minimum time between DCA levels)
+        self.MIN_DCA_INTERVAL_SECONDS = 300  # 5 minutes minimum between DCA levels
+
         # State
         self.active_positions: Dict[str, DCAPosition] = {}
         self.completed_positions: List[DCAPosition] = []
@@ -139,6 +144,7 @@ class DCAHybridStrategy:
         dca_logger.info(f"  - DCA Levels: {self.DCA_LEVELS}")
         dca_logger.info(f"  - Stop Loss: {self.STOP_LOSS_PERCENT*100:.1f}%")
         dca_logger.info(f"  - Exit Time: {self.EXIT_HOUR:02d}:{self.EXIT_MINUTE:02d} UTC")
+        dca_logger.info(f"  - Min DCA Interval: {self.MIN_DCA_INTERVAL_SECONDS}s")
 
     def analyze_multi_timeframe(self, df_4h: pd.DataFrame, df_1h: pd.DataFrame,
                                 df_15m: pd.DataFrame, symbol: str) -> Dict[str, Any]:
@@ -152,21 +158,21 @@ class DCAHybridStrategy:
             'volume_ratio': 1.0,
         }
 
-        if not df_4h.empty and len(df_4h) >= 20:
+        if not df_4h.empty and len(df_4h) >= 15:
             htf_analysis = self._analyze_timeframe(df_4h, "4H")
             result['htf'] = htf_analysis
             result['htf_trend'] = htf_analysis.get('trend', 'NEUTRAL')
             result['htf_tdi'] = htf_analysis.get('tdi_level', 50)
             result['htf_zone'] = htf_analysis.get('tdi_zone', 'NEUTRAL')
 
-        if not df_1h.empty and len(df_1h) >= 20:
+        if not df_1h.empty and len(df_1h) >= 15:
             mtf_analysis = self._analyze_timeframe(df_1h, "1H")
             result['mtf'] = mtf_analysis
             result['mtf_trend'] = mtf_analysis.get('trend', 'NEUTRAL')
             result['mtf_tdi'] = mtf_analysis.get('tdi_level', 50)
             result['mtf_zone'] = mtf_analysis.get('tdi_zone', 'NEUTRAL')
 
-        if not df_15m.empty and len(df_15m) >= 20:
+        if not df_15m.empty and len(df_15m) >= 15:
             ltf_analysis = self._analyze_timeframe(df_15m, "15M")
             result['ltf'] = ltf_analysis
             result['ltf_trend'] = ltf_analysis.get('trend', 'NEUTRAL')
@@ -186,13 +192,13 @@ class DCAHybridStrategy:
             # Calculate indicators with HA first
             df = Indicators.calculate_all_indicators(df)
 
-            if df.empty or len(df) < 20:
+            if df.empty or len(df) < 15:
                 return {'trend': 'NEUTRAL', 'tdi_level': 50, 'tdi_zone': 'NEUTRAL'}
 
             last = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else last
 
-            # Get TDI values with fallbacks
+            # Get TDI values with fallbacks - use actual values if available
             tdi_slow = last.get('tdi_slow_ma', 50)
             tdi_fast = last.get('tdi_fast_ma', 50)
             tdi_prev = prev.get('tdi_slow_ma', 50)
@@ -203,6 +209,10 @@ class DCAHybridStrategy:
             ha_color = last.get('ha_color', 0)
             ha_prev_color = prev.get('ha_color', 0)
             volume_ratio = last.get('volume_ratio', 1)
+
+            # If TDI is still 50, try to use RSI as fallback
+            if tdi_slow == 50 and 'rsi' in last:
+                tdi_slow = last.get('rsi', 50)
 
             trend = self._get_trend(tdi_slow, tdi_fast, tdi_prev, ha_color, ha_prev_color)
             tdi_zone = self._get_tdi_zone(tdi_slow)
@@ -223,11 +233,13 @@ class DCAHybridStrategy:
 
     def _get_trend(self, tdi_slow: float, tdi_fast: float, tdi_prev: float,
                    ha_color: int, ha_prev_color: int) -> str:
+        # Use TDI values for trend detection
         if tdi_fast > tdi_slow and tdi_slow > self.TDI_CENTER:
             return "BULLISH"
         elif tdi_fast < tdi_slow and tdi_slow < self.TDI_CENTER:
             return "BEARISH"
 
+        # Use HA for confirmation
         if ha_color == 1 and ha_prev_color == 1:
             if tdi_slow > self.TDI_CENTER:
                 return "BULLISH"
@@ -239,6 +251,7 @@ class DCAHybridStrategy:
             elif tdi_slow < self.TDI_SOFT_SELL:
                 return "NEUTRAL_BEARISH"
 
+        # Trend based on TDI momentum
         if tdi_slow > tdi_prev and tdi_slow > self.TDI_CENTER:
             return "NEUTRAL_BULLISH"
         elif tdi_slow < tdi_prev and tdi_slow < self.TDI_CENTER:
@@ -273,6 +286,7 @@ class DCAHybridStrategy:
         short_score = 0
         reasons = []
 
+        # HTF (4H) - Highest weight
         if htf_trend in ["STRONG_BULLISH", "BULLISH"]:
             long_score += 3
             reasons.append("4H Bullish")
@@ -280,6 +294,7 @@ class DCAHybridStrategy:
             short_score += 3
             reasons.append("4H Bearish")
 
+        # MTF (1H) - Medium weight
         if mtf_trend in ["STRONG_BULLISH", "BULLISH"]:
             long_score += 2
             reasons.append("1H Bullish")
@@ -287,6 +302,7 @@ class DCAHybridStrategy:
             short_score += 2
             reasons.append("1H Bearish")
 
+        # LTF (15M) - Lower weight
         if ltf_trend in ["STRONG_BULLISH", "BULLISH"]:
             long_score += 1
             reasons.append("15M Bullish")
@@ -294,6 +310,7 @@ class DCAHybridStrategy:
             short_score += 1
             reasons.append("15M Bearish")
 
+        # TDI alignment
         htf_tdi = htf.get('tdi_level', 50)
         mtf_tdi = mtf.get('tdi_level', 50)
 
@@ -304,6 +321,7 @@ class DCAHybridStrategy:
             short_score += 1
             reasons.append("TDI aligned SHORT")
 
+        # Bollinger Bands
         ltf_bb = ltf.get('bb_position', 0.5)
         if ltf_bb < 0.3:
             long_score += 0.5
@@ -339,11 +357,13 @@ class DCAHybridStrategy:
 
     def get_dca_levels(self, symbol: str, current_price: float,
                        df_15m: pd.DataFrame) -> List[float]:
-        if df_15m.empty or len(df_15m) < 20:
+        """Calculate DCA levels with proper spacing."""
+        if df_15m.empty or len(df_15m) < 15:
+            # Default levels with 1% spacing
             return [
-                current_price * (1 - 0.002),
-                current_price * (1 - 0.004),
-                current_price * (1 - 0.006),
+                current_price * (1 - 0.01),
+                current_price * (1 - 0.02),
+                current_price * (1 - 0.03),
             ]
 
         last = df_15m.iloc[-1]
@@ -351,87 +371,121 @@ class DCAHybridStrategy:
         bb_upper = last.get('bb_upper', current_price * 1.02)
         tdi_slow = last.get('tdi_slow_ma', 50)
 
-        if tdi_slow < self.TDI_CENTER and bb_lower > 0:
-            base = bb_lower
-        elif tdi_slow > self.TDI_CENTER and bb_upper > 0:
-            base = bb_upper
-        else:
-            base = current_price
-
-        levels = []
-        spacing = self.DCA_SPACING
+        # Use 1% spacing (not 0.2%)
+        spacing = max(self.DCA_SPACING * 5, 0.01)  # At least 1% spacing
 
         if tdi_slow < self.TDI_CENTER:
-            levels.append(base)
-            levels.append(base * (1 - spacing))
-            levels.append(base * (1 - spacing * 2))
+            # For LONG entries, levels below current price
+            base = min(current_price, bb_lower if bb_lower > 0 else current_price * 0.99)
+            levels = [
+                base,
+                base * (1 - spacing),
+                base * (1 - spacing * 2),
+            ]
         else:
-            levels.append(base)
-            levels.append(base * (1 + spacing))
-            levels.append(base * (1 + spacing * 2))
+            # For SHORT entries, levels above current price
+            base = max(current_price, bb_upper if bb_upper > 0 else current_price * 1.01)
+            levels = [
+                base,
+                base * (1 + spacing),
+                base * (1 + spacing * 2),
+            ]
 
-        return levels
+        # Ensure levels are sorted correctly
+        if tdi_slow < self.TDI_CENTER:
+            levels.sort()  # Ascending for LONG
+        else:
+            levels.sort(reverse=True)  # Descending for SHORT
+
+        return levels[:self.DCA_LEVELS]
 
     def should_enter_dca(self, symbol: str, current_price: float,
                          df_15m: pd.DataFrame, market_context: Dict) -> Dict:
+        """Check if we should enter a DCA position with time delay."""
+        now = datetime.now()
+
         if symbol in self.active_positions:
             position = self.active_positions[symbol]
 
+            # Check if max levels reached
             if position.dca_level >= self.DCA_LEVELS:
+                dca_logger.debug(f"{symbol}: Max DCA levels reached ({position.dca_level}/{self.DCA_LEVELS})")
                 return self._no_entry("Max DCA levels reached")
 
+            # Check time delay since last DCA
+            if position.last_dca_time:
+                time_since_dca = (now - position.last_dca_time).total_seconds()
+                if time_since_dca < self.MIN_DCA_INTERVAL_SECONDS:
+                    remaining = int(self.MIN_DCA_INTERVAL_SECONDS - time_since_dca)
+                    dca_logger.debug(f"{symbol}: DCA cooldown: {remaining}s remaining")
+                    return self._no_entry(f"DCA cooldown: {remaining}s remaining")
+
+            # Calculate DCA levels
             dca_levels = self.get_dca_levels(symbol, current_price, df_15m)
-            next_level = dca_levels[position.dca_level] if len(dca_levels) > position.dca_level else 0
+            if len(dca_levels) <= position.dca_level:
+                return self._no_entry("No more DCA levels available")
 
-            if position.direction == "LONG" and next_level > 0 and current_price <= next_level:
-                return {
-                    'should_enter': True,
-                    'level': position.dca_level + 1,
-                    'entry_price': next_level,
-                    'direction': position.direction,
-                    'direction_confidence': position.direction_confidence,
-                    'direction_reason': position.direction_reason,
-                    'reason': f'DCA Level {position.dca_level + 1}'
-                }
-            elif position.direction == "SHORT" and next_level > 0 and current_price >= next_level:
-                return {
-                    'should_enter': True,
-                    'level': position.dca_level + 1,
-                    'entry_price': next_level,
-                    'direction': position.direction,
-                    'direction_confidence': position.direction_confidence,
-                    'direction_reason': position.direction_reason,
-                    'reason': f'DCA Level {position.dca_level + 1}'
-                }
-            else:
-                return self._no_entry(f'Waiting for DCA level {position.dca_level + 1}')
+            next_level = dca_levels[position.dca_level]
 
+            # Check if price has moved to the next level
+            if position.direction == "LONG":
+                # For LONG: price should drop to or below the next level
+                if current_price <= next_level:
+                    dca_logger.info(f"{symbol}: LONG DCA level {position.dca_level + 1} triggered at ${next_level:.4f}")
+                    return {
+                        'should_enter': True,
+                        'level': position.dca_level + 1,
+                        'entry_price': next_level,
+                        'direction': position.direction,
+                        'direction_confidence': position.direction_confidence,
+                        'direction_reason': position.direction_reason,
+                        'reason': f'DCA Level {position.dca_level + 1} - Price dropped to {current_price:.4f}'
+                    }
+            else:  # SHORT
+                # For SHORT: price should rise to or above the next level
+                if current_price >= next_level:
+                    dca_logger.info(f"{symbol}: SHORT DCA level {position.dca_level + 1} triggered at ${next_level:.4f}")
+                    return {
+                        'should_enter': True,
+                        'level': position.dca_level + 1,
+                        'entry_price': next_level,
+                        'direction': position.direction,
+                        'direction_confidence': position.direction_confidence,
+                        'direction_reason': position.direction_reason,
+                        'reason': f'DCA Level {position.dca_level + 1} - Price rose to {current_price:.4f}'
+                    }
+
+            dca_logger.debug(f"{symbol}: Waiting for DCA level {position.dca_level + 1} at ${next_level:.4f} (current: ${current_price:.4f})")
+            return self._no_entry(f'Waiting for DCA level {position.dca_level + 1} at ${next_level:.4f}')
+
+        # ===== NO POSITION - CHECK NEW ENTRY =====
         direction = market_context.get('direction', 'NEUTRAL')
         confidence = market_context.get('confidence', 0)
 
+        # Minimum confidence check
         if confidence < self.MIN_DIRECTION_CONFIDENCE:
+            dca_logger.debug(f"{symbol}: Confidence too low: {confidence*100:.0f}%")
             return self._no_entry(f'Confidence too low: {confidence*100:.0f}%')
 
         if direction not in ['LONG', 'SHORT']:
             return self._no_entry(f'No clear direction: {direction}')
 
-        ltf_trend = market_context.get('ltf_trend', 'NEUTRAL')
-        if direction == "LONG" and ltf_trend not in ['BULLISH', 'NEUTRAL_BULLISH']:
-            return self._no_entry('LTF not confirming LONG')
-        elif direction == "SHORT" and ltf_trend not in ['BEARISH', 'NEUTRAL_BEARISH']:
-            return self._no_entry('LTF not confirming SHORT')
-
+        # Get DCA levels
         dca_levels = self.get_dca_levels(symbol, current_price, df_15m)
         if not dca_levels:
             return self._no_entry('No DCA levels')
 
         entry_price = dca_levels[0]
 
-        if direction == "LONG" and current_price > entry_price * 1.001:
+        # For new positions, only enter if price is at the first level
+        if direction == "LONG" and current_price > entry_price * 1.005:
+            dca_logger.debug(f"{symbol}: Price ${current_price:.4f} above LONG entry ${entry_price:.4f}")
             return self._no_entry(f'Price above LONG entry: {current_price:.4f}')
-        elif direction == "SHORT" and current_price < entry_price * 0.999:
+        elif direction == "SHORT" and current_price < entry_price * 0.995:
+            dca_logger.debug(f"{symbol}: Price ${current_price:.4f} below SHORT entry ${entry_price:.4f}")
             return self._no_entry(f'Price below SHORT entry: {current_price:.4f}')
 
+        dca_logger.info(f"{symbol}: New {direction} position at ${entry_price:.4f}")
         return {
             'should_enter': True,
             'level': 1,
@@ -459,13 +513,17 @@ class DCAHybridStrategy:
 
         position = self.active_positions[symbol]
 
+        # Stop loss check
         if position.direction == "LONG":
             if current_price <= position.stop_loss:
+                dca_logger.info(f"{symbol}: Stop loss triggered at ${current_price:.4f}")
                 return self._exit_decision(current_price, 'Stop loss triggered', 1.0)
         else:
             if current_price >= position.stop_loss:
+                dca_logger.info(f"{symbol}: Stop loss triggered at ${current_price:.4f}")
                 return self._exit_decision(current_price, 'Stop loss triggered', 1.0)
 
+        # Take profit check
         avg_entry = position.total_cost / position.quantity if position.quantity > 0 else 0
         if avg_entry > 0:
             if position.direction == "LONG":
@@ -475,16 +533,20 @@ class DCAHybridStrategy:
 
             for tp in self.TP_LEVELS:
                 if pnl_percent >= tp['percent']:
+                    dca_logger.info(f"{symbol}: Take profit {tp['label']} at ${current_price:.4f} ({pnl_percent*100:.2f}%)")
                     return self._exit_decision(current_price, f'Take profit {tp["label"]}', tp['size'])
 
+        # Time-based exit
         exit_time = current_time.replace(hour=self.EXIT_HOUR, minute=self.EXIT_MINUTE, second=0)
         minutes_until_exit = (exit_time - current_time).total_seconds() / 60
 
         if minutes_until_exit <= self.MINUTES_BEFORE_EXIT:
             if minutes_until_exit <= 5:
+                dca_logger.info(f"{symbol}: Time-based full exit at ${current_price:.4f}")
                 return self._exit_decision(current_price, 'Time-based full exit', 1.0)
             else:
                 sell_percent = (self.MINUTES_BEFORE_EXIT - minutes_until_exit) / self.MINUTES_BEFORE_EXIT
+                dca_logger.info(f"{symbol}: Time-based partial exit at ${current_price:.4f} ({sell_percent*100:.0f}%)")
                 return self._exit_decision(current_price, f'Time-based partial ({minutes_until_exit:.0f}min left)',
                                          min(sell_percent, 0.5))
 
@@ -512,32 +574,38 @@ class DCAHybridStrategy:
                          quantity: float) -> bool:
         try:
             stop_loss = self._calculate_stop_loss(entry_price, direction)
+            now = datetime.now()
 
             if symbol in self.active_positions:
                 position = self.active_positions[symbol]
+
+                # Calculate new average entry
                 total_cost = position.total_cost + (entry_price * quantity)
                 total_qty = position.quantity + quantity
                 avg_entry = total_cost / total_qty if total_qty > 0 else 0
 
+                # Update position
                 position.entry_price = avg_entry
                 position.total_cost = total_cost
                 position.quantity = total_qty
                 position.dca_level = level
                 position.stop_loss = stop_loss
+                position.last_dca_time = now
+                position.dca_count += 1
                 position.dca_entries.append({
                     'price': entry_price,
                     'quantity': quantity,
-                    'time': datetime.now().isoformat(),
+                    'time': now.isoformat(),
                     'level': level
                 })
 
-                dca_logger.info(f"{EMOJI['DCA']} DCA_ADD: {symbol} Level {level} @ {entry_price:.4f}")
+                dca_logger.info(f"{EMOJI['DCA']} DCA_ADD: {symbol} Level {level} @ {entry_price:.4f} (Count: {position.dca_count})")
             else:
                 position = DCAPosition(
                     symbol=symbol,
                     direction=direction,
                     entry_price=entry_price,
-                    entry_time=datetime.now(),
+                    entry_time=now,
                     quantity=quantity,
                     total_cost=entry_price * quantity,
                     current_price=entry_price,
@@ -551,11 +619,13 @@ class DCAHybridStrategy:
                     dca_level=level,
                     total_dca_levels=self.DCA_LEVELS,
                     dca_entries=[{'price': entry_price, 'quantity': quantity,
-                                  'time': datetime.now().isoformat(), 'level': level}],
+                                  'time': now.isoformat(), 'level': level}],
                     stop_loss=stop_loss,
                     direction_confidence=direction_confidence,
                     direction_reason=direction_reason,
                     entry_score=market_context.get('confidence', 0) * 100,
+                    last_dca_time=now,
+                    dca_count=1,
                 )
                 self.active_positions[symbol] = position
 
@@ -602,7 +672,7 @@ class DCAHybridStrategy:
             else:
                 self.daily_losses += 1
 
-            dca_logger.info(f"{EMOJI['EXIT']} DCA_EXIT: {symbol} @ {exit_price:.4f} | PnL: ${pnl:.2f}")
+            dca_logger.info(f"{EMOJI['EXIT']} DCA_EXIT: {symbol} @ {exit_price:.4f} | PnL: ${pnl:.2f} ({pnl_percent*100:+.2f}%)")
         else:
             remaining_qty = position.quantity - sell_qty
             remaining_cost = position.total_cost * (remaining_qty / position.quantity)
