@@ -74,30 +74,30 @@ class MongoDBClient:
             self.enabled = False
 
     def _create_indexes(self):
-    """Create necessary indexes."""
-    try:
-        if self.active_collection is not None:
-            self.active_collection.create_index("symbol", unique=False)
-            self.active_collection.create_index("entry_time")
-            self.active_collection.create_index("status")
+        """Create necessary indexes."""
+        try:
+            if self.active_collection is not None:
+                self.active_collection.create_index("symbol", unique=False)
+                self.active_collection.create_index("entry_time")
+                self.active_collection.create_index("status")
 
-        if self.resolved_collection is not None:
-            self.resolved_collection.create_index("symbol")
-            self.resolved_collection.create_index("exit_time")
-            self.resolved_collection.create_index("entry_time")
-            self.resolved_collection.create_index("status")
+            if self.resolved_collection is not None:
+                self.resolved_collection.create_index("symbol")
+                self.resolved_collection.create_index("exit_time")
+                self.resolved_collection.create_index("entry_time")
+                self.resolved_collection.create_index("status")
 
-        if self.trades_collection is not None:
-            self.trades_collection.create_index("symbol")
-            self.trades_collection.create_index("exit_time")
-            self.trades_collection.create_index("entry_time")
-            self.trades_collection.create_index("direction")
+            if self.trades_collection is not None:
+                self.trades_collection.create_index("symbol")
+                self.trades_collection.create_index("exit_time")
+                self.trades_collection.create_index("entry_time")
+                self.trades_collection.create_index("direction")
 
-        if self.stats_collection is not None:
-            self.stats_collection.create_index("date", unique=True)
+            if self.stats_collection is not None:
+                self.stats_collection.create_index("date", unique=True)
 
-    except Exception as e:
-        logger.warning(f"Index creation issue: {e}")
+        except Exception as e:
+            logger.warning(f"Index creation issue: {e}")
 
     def _parse_document(self, doc: Dict) -> Dict:
         """Parse MongoDB document with ObjectId to string."""
@@ -107,7 +107,7 @@ class MongoDBClient:
 
     def save_active_position(self, position: Any) -> bool:
         """Save an active DCA position."""
-        if not self.enabled or not self.active_collection:
+        if not self.enabled or self.active_collection is None:
             return False
 
         try:
@@ -133,39 +133,44 @@ class MongoDBClient:
 
         try:
             # Get active position
-            active_doc = self.active_collection.find_one({"symbol": position.symbol, "status": "ACTIVE"})
+            if self.active_collection is not None:
+                active_doc = self.active_collection.find_one({"symbol": position.symbol, "status": "ACTIVE"})
 
-            if active_doc:
-                # Delete from active
-                self.active_collection.delete_one({"_id": active_doc["_id"]})
+                if active_doc:
+                    # Delete from active
+                    self.active_collection.delete_one({"_id": active_doc["_id"]})
 
             # Save to resolved
-            position_dict = self._position_to_dict(position)
-            position_dict["status"] = "CLOSED"
-            position_dict["resolved_at"] = datetime.now()
+            if self.resolved_collection is not None:
+                position_dict = self._position_to_dict(position)
+                position_dict["status"] = "CLOSED"
+                position_dict["resolved_at"] = datetime.now()
 
-            result = self.resolved_collection.insert_one(position_dict)
+                result = self.resolved_collection.insert_one(position_dict)
 
-            # Also save to trades collection
-            trade_doc = {
-                "symbol": position.symbol,
-                "direction": position.direction,
-                "entry_price": position.entry_price,
-                "exit_price": position.exit_price,
-                "quantity": position.quantity,
-                "total_cost": position.total_cost,
-                "realized_pnl": position.realized_pnl,
-                "entry_time": position.entry_time,
-                "exit_time": position.exit_time,
-                "dca_levels": position.dca_level,
-                "total_dca_levels": position.total_dca_levels,
-                "stop_loss": position.stop_loss,
-                "direction_confidence": position.direction_confidence,
-                "direction_reason": position.direction_reason,
-            }
-            self.trades_collection.insert_one(trade_doc)
+                # Also save to trades collection
+                if self.trades_collection is not None:
+                    trade_doc = {
+                        "symbol": position.symbol,
+                        "direction": position.direction,
+                        "entry_price": position.entry_price,
+                        "exit_price": position.exit_price,
+                        "quantity": position.quantity,
+                        "total_cost": position.total_cost,
+                        "realized_pnl": position.realized_pnl,
+                        "entry_time": position.entry_time,
+                        "exit_time": position.exit_time,
+                        "dca_levels": position.dca_level,
+                        "total_dca_levels": position.total_dca_levels,
+                        "stop_loss": position.stop_loss,
+                        "direction_confidence": position.direction_confidence,
+                        "direction_reason": position.direction_reason,
+                    }
+                    self.trades_collection.insert_one(trade_doc)
 
-            return result.acknowledged
+                return result.acknowledged
+
+            return False
 
         except Exception as e:
             logger.error(f"Failed to move position to resolved: {e}")
@@ -173,7 +178,7 @@ class MongoDBClient:
 
     def get_active_positions(self) -> List[Dict]:
         """Get all active positions."""
-        if not self.enabled or not self.active_collection:
+        if not self.enabled or self.active_collection is None:
             return []
 
         try:
@@ -185,7 +190,7 @@ class MongoDBClient:
 
     def get_active_position(self, symbol: str) -> Optional[Dict]:
         """Get a specific active position."""
-        if not self.enabled or not self.active_collection:
+        if not self.enabled or self.active_collection is None:
             return None
 
         try:
@@ -197,7 +202,7 @@ class MongoDBClient:
 
     def get_resolved_positions(self, limit: int = 100) -> List[Dict]:
         """Get resolved positions."""
-        if not self.enabled or not self.resolved_collection:
+        if not self.enabled or self.resolved_collection is None:
             return []
 
         try:
@@ -212,7 +217,7 @@ class MongoDBClient:
     def get_trades(self, symbol: Optional[str] = None,
                    limit: int = 100) -> List[Dict]:
         """Get trade history."""
-        if not self.enabled or not self.trades_collection:
+        if not self.enabled or self.trades_collection is None:
             return []
 
         try:
@@ -230,7 +235,7 @@ class MongoDBClient:
 
     def save_daily_stats(self, stats: Dict) -> bool:
         """Save daily statistics."""
-        if not self.enabled or not self.stats_collection:
+        if not self.enabled or self.stats_collection is None:
             return False
 
         try:
@@ -258,7 +263,7 @@ class MongoDBClient:
 
     def get_daily_stats(self, days: int = 7) -> List[Dict]:
         """Get daily statistics for last N days."""
-        if not self.enabled or not self.stats_collection:
+        if not self.enabled or self.stats_collection is None:
             return []
 
         try:
@@ -274,7 +279,7 @@ class MongoDBClient:
 
     def update_position_price(self, symbol: str, current_price: float) -> bool:
         """Update current price for a position."""
-        if not self.enabled or not self.active_collection:
+        if not self.enabled or self.active_collection is None:
             return False
 
         try:
@@ -289,7 +294,7 @@ class MongoDBClient:
 
     def delete_position(self, symbol: str) -> bool:
         """Delete a position (use with caution)."""
-        if not self.enabled or not self.active_collection:
+        if not self.enabled or self.active_collection is None:
             return False
 
         try:
@@ -335,7 +340,7 @@ class MongoDBClient:
 
     def get_performance_summary(self) -> Dict:
         """Get overall performance summary."""
-        if not self.enabled:
+        if not self.enabled or self.resolved_collection is None:
             return {}
 
         try:
