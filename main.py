@@ -100,8 +100,9 @@ bot_stats: Dict[str, Any] = {
         "active": 0,
         "total_pnl": 0.0,
     },
-    "last_status_sent": None,  # Track when last status was sent
-    "last_heartbeat": None,    # Track last heartbeat
+    "last_status_sent": None,
+    "last_heartbeat": None,
+    "last_price_time": None,
 }
 
 # ========== POSITION SIZE ==========
@@ -118,8 +119,8 @@ STATUS_HOUR = 0  # Midnight UTC
 STATUS_MINUTE = 5  # 5 minutes past midnight
 
 # ========== HEARTBEAT CONFIGURATION ==========
-# Log heartbeat every N cycles (every ~30 seconds with 6 symbols at 5s interval)
-HEARTBEAT_INTERVAL_CYCLES = 2  # Log heartbeat every 2 cycles (~1 minute)
+# Log heartbeat every N cycles (~1 minute with 6 symbols at 10s interval)
+HEARTBEAT_INTERVAL_CYCLES = 2
 
 
 # ==================== BINANCE CLIENT ====================
@@ -172,6 +173,7 @@ class BinanceDataClient:
                 return float(df['close'].iloc[-1])
             return None
         except Exception as e:
+            main_logger.debug(f"Price fetch error for {symbol}: {e}")
             return None
 
     def get_historical_klines(self, symbol: str, interval: str = None, limit: int = 500) -> pd.DataFrame:
@@ -190,6 +192,7 @@ class BinanceDataClient:
                 return result
             return pd.DataFrame()
         except Exception as e:
+            main_logger.debug(f"Klines fetch error for {symbol}: {e}")
             return pd.DataFrame()
 
     def _convert_klines_to_dataframe(self, raw_klines: List) -> pd.DataFrame:
@@ -283,22 +286,42 @@ def create_dca_signal(symbol: str, signal_type: str, entry_price: float,
 def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
     """Process a symbol for DCA hybrid strategy with Signal Manager."""
     try:
+        # ===== DEBUG: Starting processing =====
+        main_logger.debug(f"🔍 Processing {symbol}...")
+
         # ===== 1. FETCH ALL TIMEFRAMES =====
         current_price = client.get_current_price(symbol)
         if current_price is None:
+            main_logger.warning(f"⚠️ No price for {symbol}")
             return {"action": "none", "reason": "No price"}
 
+        # Track that we got a price
+        bot_stats['last_price_time'] = datetime.now()
+        main_logger.debug(f"✅ {symbol} price: ${current_price:.2f}")
+
+        # 4H data (HTF)
         df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)
         if df_4h.empty or len(df_4h) < 20:
+            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles")
             return {"action": "none", "reason": "Insufficient 4H data"}
 
+        main_logger.debug(f"✅ {symbol} 4H data: {len(df_4h)} candles")
+
+        # 1H data (MTF)
         df_1h = client.get_historical_klines(symbol, interval="1h", limit=100)
         if df_1h.empty or len(df_1h) < 20:
+            main_logger.warning(f"⚠️ Insufficient 1H data for {symbol}: {len(df_1h)} candles")
             return {"action": "none", "reason": "Insufficient 1H data"}
 
+        main_logger.debug(f"✅ {symbol} 1H data: {len(df_1h)} candles")
+
+        # 15M data (LTF)
         df_15m = client.get_historical_klines(symbol, interval="15m", limit=200)
         if df_15m.empty or len(df_15m) < 20:
+            main_logger.warning(f"⚠️ Insufficient 15M data for {symbol}: {len(df_15m)} candles")
             return {"action": "none", "reason": "Insufficient 15M data"}
+
+        main_logger.debug(f"✅ {symbol} 15M data: {len(df_15m)} candles")
 
         # ===== 2. MULTI-TIMEFRAME ANALYSIS =====
         market_context = dca_strategy.analyze_multi_timeframe(
@@ -314,7 +337,7 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         tdi_zone = market_context.get('tdi_zone', 'NEUTRAL')
         bb_position = market_context.get('bb_position', 0.5)
 
-        # Log detailed signal analysis (always at INFO level)
+        # Log detailed signal analysis (ALWAYS show this)
         main_logger.info(
             f"{EMOJI['SCAN']} {symbol}: "
             f"Price=${current_price:.2f} | "
@@ -409,6 +432,7 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
                 can_gen, reason = can_generate_signal(symbol)
                 if not can_gen:
+                    main_logger.debug(f"⏳ Signal blocked for {symbol}: {reason}")
                     return {"action": "pending", "reason": reason}
 
                 entry_signal = create_dca_signal(
@@ -480,6 +504,7 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         else:
             can_gen, reason = can_generate_signal(symbol)
             if not can_gen:
+                main_logger.debug(f"⏳ New position blocked for {symbol}: {reason}")
                 return {"action": "pending", "reason": reason}
 
             entry_check = dca_strategy.should_enter_dca(symbol, current_price, df_15m, market_context)
@@ -565,6 +590,8 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
     except Exception as e:
         main_logger.error(f"{EMOJI['ERROR']} Error processing {symbol}: {e}")
+        import traceback
+        main_logger.error(traceback.format_exc())
         bot_stats['errors'] += 1
         return {"action": "error", "reason": str(e)}
 
@@ -676,15 +703,25 @@ def log_heartbeat(cycle_count: int):
     active_positions = len(dca_strategy.active_positions)
     active_signals = len(signal_manager.active_signals)
     pending_signals = len(signal_manager.get_pending_signals())
+    errors = bot_stats['errors']
+
+    # Check if we're getting data
+    last_price = bot_stats.get('last_price_time')
+    if last_price:
+        seconds_since_price = (now - last_price).seconds
+        price_status = "✅" if seconds_since_price < 120 else f"⚠️ {seconds_since_price}s ago"
+    else:
+        price_status = "❌ No data"
 
     main_logger.info(
         f"{EMOJI['HEARTBEAT']} Bot Active - "
         f"Cycle #{cycle_count} | "
         f"Time: {now.strftime('%H:%M:%S')} | "
-        f"Active Positions: {active_positions} | "
+        f"Price: {price_status} | "
+        f"Positions: {active_positions} | "
         f"Signals: {active_signals} active, {pending_signals} pending | "
         f"Daily PnL: ${dca_strategy.daily_pnl:.2f} | "
-        f"Errors: {bot_stats['errors']}"
+        f"Errors: {errors}"
     )
 
     bot_stats['last_heartbeat'] = now.isoformat()
@@ -795,6 +832,8 @@ def run_processing_loop():
             break
         except Exception as e:
             main_logger.error(f"{EMOJI['ERROR']} Loop error: {e}")
+            import traceback
+            main_logger.error(traceback.format_exc())
             bot_stats['errors'] += 1
             time.sleep(10)
 
