@@ -1056,6 +1056,39 @@ def signal_handler(sig, frame):
     main_logger.info(f"{EMOJI['STOP']} Shutdown signal ({sig})")
     running = False
 
+# ==================== HEARTBEAT FUNCTION ====================
+
+def log_heartbeat(cycle_count: int):
+    """Log a heartbeat to show the bot is actively running."""
+    now = datetime.now()
+    active_positions = len(dca_strategy.active_positions)
+    active_signals = len(signal_manager.active_signals)
+    pending_signals = len(signal_manager.get_pending_signals())
+    errors = bot_stats['errors']
+    dca_setups_active = signal_manager.get_stats().get('dca_setups_active', 0)
+
+    last_price = bot_stats.get('last_price_time')
+    if last_price:
+        seconds_since_price = (now - last_price).seconds
+        price_status = "✅" if seconds_since_price < 120 else f"⚠️ {seconds_since_price}s ago"
+    else:
+        price_status = "❌ No data"
+
+    main_logger.info(
+        f"{EMOJI['HEARTBEAT']} Bot Active - "
+        f"Cycle #{cycle_count} | "
+        f"Time: {now.strftime('%H:%M:%S')} | "
+        f"Price: {price_status} | "
+        f"Positions: {active_positions} | "
+        f"Signals: {active_signals} active, {pending_signals} pending | "
+        f"DCA Setups: {dca_setups_active} active | "
+        f"Daily PnL: ${dca_strategy.daily_pnl:.2f} | "
+        f"Errors: {errors} | "
+        f"Duplicates Blocked: {bot_stats['duplicate_signals_prevented']}"
+    )
+
+    bot_stats['last_heartbeat'] = now.isoformat()
+
 
 # ==================== MAIN ====================
 
