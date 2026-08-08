@@ -46,10 +46,11 @@ class DataFetcher:
     """Handles data fetching from Binance with caching."""
 
     def __init__(self, demo_mode: Optional[bool] = None):
-        self.demo_mode = demo_mode if demo_mode is not None else config.is_demo()
+        self.demo_mode = demo_mode if demo_mode is not None else False
         self.cache = {}
         self.cache_ttl = config.performance.cache_ttl_seconds
         self.cache_timestamps = {}
+   
 
         self.client = None
         if not self.demo_mode and BINANCE_AVAILABLE:
