@@ -122,6 +122,13 @@ STATUS_MINUTE = 5  # 5 minutes past midnight
 # Log heartbeat every N cycles (~1 minute with 6 symbols at 10s interval)
 HEARTBEAT_INTERVAL_CYCLES = 2
 
+# ========== HELPER: JSON Serializer ==========
+def json_serializer(obj):
+    """Custom JSON serializer for datetime objects."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 
 # ==================== BINANCE CLIENT ====================
 
@@ -299,26 +306,26 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         bot_stats['last_price_time'] = datetime.now()
         main_logger.debug(f"✅ {symbol} price: ${current_price:.2f}")
 
-        # 4H data (HTF)
-        df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)
-        if df_4h.empty or len(df_4h) < 20:
-            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles")
+        # 4H data (HTF) - Increased limit to 100 to ensure enough data
+        df_4h = client.get_historical_klines(symbol, interval="4h", limit=100)
+        if df_4h.empty or len(df_4h) < 30:
+            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles (need 30)")
             return {"action": "none", "reason": "Insufficient 4H data"}
 
         main_logger.debug(f"✅ {symbol} 4H data: {len(df_4h)} candles")
 
         # 1H data (MTF)
         df_1h = client.get_historical_klines(symbol, interval="1h", limit=100)
-        if df_1h.empty or len(df_1h) < 20:
-            main_logger.warning(f"⚠️ Insufficient 1H data for {symbol}: {len(df_1h)} candles")
+        if df_1h.empty or len(df_1h) < 30:
+            main_logger.warning(f"⚠️ Insufficient 1H data for {symbol}: {len(df_1h)} candles (need 30)")
             return {"action": "none", "reason": "Insufficient 1H data"}
 
         main_logger.debug(f"✅ {symbol} 1H data: {len(df_1h)} candles")
 
         # 15M data (LTF)
         df_15m = client.get_historical_klines(symbol, interval="15m", limit=200)
-        if df_15m.empty or len(df_15m) < 20:
-            main_logger.warning(f"⚠️ Insufficient 15M data for {symbol}: {len(df_15m)} candles")
+        if df_15m.empty or len(df_15m) < 30:
+            main_logger.warning(f"⚠️ Insufficient 15M data for {symbol}: {len(df_15m)} candles (need 30)")
             return {"action": "none", "reason": "Insufficient 15M data"}
 
         main_logger.debug(f"✅ {symbol} 15M data: {len(df_15m)} candles")
@@ -875,6 +882,8 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def _handle_health(self):
         signal_stats = signal_manager.get_stats()
+
+        # Convert datetime objects to strings for JSON serialization
         status = {
             "status": "healthy" if running else "stopped",
             "timestamp": datetime.now().isoformat(),
@@ -900,7 +909,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200 if is_healthy else 503)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(json.dumps(status, indent=2).encode())
+        # Use custom serializer for datetime
+        self.wfile.write(json.dumps(status, indent=2, default=json_serializer).encode())
 
     def _handle_metrics(self):
         signal_stats = signal_manager.get_stats()
@@ -930,6 +940,14 @@ class HealthHandler(BaseHTTPRequestHandler):
             active_signals = signal_manager.get_all_active_signals()
             pending_signals = signal_manager.get_pending_signals()
             signal_stats = signal_manager.get_stats()
+
+            # Convert datetime objects to strings
+            def convert_signal(s):
+                result = dict(s)
+                for key in ['entry_time', 'created_at', 'expires_at', 'executed_at']:
+                    if key in result and result[key] and isinstance(result[key], datetime):
+                        result[key] = result[key].isoformat()
+                return result
 
             status = {
                 "timestamp": datetime.now().isoformat(),
@@ -967,7 +985,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps(status, indent=2).encode())
+            self.wfile.write(json.dumps(status, indent=2, default=json_serializer).encode())
         except Exception as e:
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
