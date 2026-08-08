@@ -24,7 +24,10 @@ except ImportError:
     BINANCE_AVAILABLE = False
     logging.warning("Binance Python library not installed")
 
-from settings import config
+try:
+    from settings import config
+except ImportError:
+    from config import config
 
 logger = logging.getLogger(__name__)
 data_logger = logging.getLogger("data_fetcher")

@@ -340,6 +340,10 @@ class Config:
             except Exception as e:
                 logger.warning(f"Failed to create directory {directory}: {e}")
 
+    def is_demo(self) -> bool:
+        """Check if running in demo mode."""
+        return self.deployment.run_mode == RunMode.DEMO
+
     def get_dca_config(self) -> Dict[str, Any]:
         return {
             "dca_levels": self.dca.dca_levels,

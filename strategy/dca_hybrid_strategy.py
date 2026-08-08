@@ -4,6 +4,11 @@ Combines Super TDI + Bollinger Bands + Multi-Timeframe for DCA entries
 Version: 1.0.0
 """
 
+import sys
+import os
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 import numpy as np
 import logging
@@ -12,7 +17,11 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
 
-from utils.indicators import Indicators, calculate_heikin_ashi
+try:
+    from utils.indicators import Indicators, calculate_heikin_ashi
+except ImportError:
+    from indicators import Indicators, calculate_heikin_ashi
+from settings import config  # <-- ADD THIS IMPORT
 
 logger = logging.getLogger(__name__)
 dca_logger = logging.getLogger("dca_strategy")
