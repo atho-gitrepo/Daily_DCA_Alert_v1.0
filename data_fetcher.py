@@ -24,10 +24,7 @@ except ImportError:
     BINANCE_AVAILABLE = False
     logging.warning("Binance Python library not installed")
 
-try:
-    from settings import config
-except ImportError:
-    from config import config
+from settings import config
 
 logger = logging.getLogger(__name__)
 data_logger = logging.getLogger("data_fetcher")
@@ -49,11 +46,10 @@ class DataFetcher:
     """Handles data fetching from Binance with caching."""
 
     def __init__(self, demo_mode: Optional[bool] = None):
-        self.demo_mode = demo_mode if demo_mode is not None else False
+        self.demo_mode = demo_mode if demo_mode is not None else config.is_demo()
         self.cache = {}
         self.cache_ttl = config.performance.cache_ttl_seconds
         self.cache_timestamps = {}
-   
 
         self.client = None
         if not self.demo_mode and BINANCE_AVAILABLE:
@@ -110,15 +106,31 @@ class DataFetcher:
         max_retries = config.performance.max_retries
         for attempt in range(max_retries):
             try:
-                raw_klines = self.client.get_historical_klines(
-                    symbol=symbol,
-                    interval=interval,
-                    limit=limit
-                )
+                # Try get_klines first (more reliable for Spot API)
+                raw_klines = None
+                if hasattr(self.client, 'get_klines'):
+                    try:
+                        raw_klines = self.client.get_klines(
+                            symbol=symbol,
+                            interval=interval,
+                            limit=limit
+                        )
+                    except Exception as e:
+                        data_logger.debug(f"get_klines failed, trying get_historical_klines: {e}")
+
+                # Fallback to get_historical_klines
+                if raw_klines is None and hasattr(self.client, 'get_historical_klines'):
+                    raw_klines = self.client.get_historical_klines(
+                        symbol=symbol,
+                        interval=interval,
+                        limit=limit
+                    )
+
                 if raw_klines:
                     return self._convert_klines_to_dataframe(raw_klines)
 
             except Exception as e:
+                data_logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {symbol}: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(config.performance.retry_delay_seconds * (attempt + 1))
                 else:

@@ -306,26 +306,26 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         bot_stats['last_price_time'] = datetime.now()
         main_logger.debug(f"✅ {symbol} price: ${current_price:.2f}")
 
-        # 4H data (HTF) - Increased limit to 100 to ensure enough data
-        df_4h = client.get_historical_klines(symbol, interval="4h", limit=100)
-        if df_4h.empty or len(df_4h) < 30:
-            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles (need 30)")
+        # 4H data (HTF) - Reduced minimum required to 15 candles
+        df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)  # Reduced limit
+        if df_4h.empty or len(df_4h) < 15:  # Changed from 30 to 15
+            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles (need 15)")
             return {"action": "none", "reason": "Insufficient 4H data"}
 
         main_logger.debug(f"✅ {symbol} 4H data: {len(df_4h)} candles")
 
         # 1H data (MTF)
         df_1h = client.get_historical_klines(symbol, interval="1h", limit=100)
-        if df_1h.empty or len(df_1h) < 30:
-            main_logger.warning(f"⚠️ Insufficient 1H data for {symbol}: {len(df_1h)} candles (need 30)")
+        if df_1h.empty or len(df_1h) < 20:
+            main_logger.warning(f"⚠️ Insufficient 1H data for {symbol}: {len(df_1h)} candles (need 20)")
             return {"action": "none", "reason": "Insufficient 1H data"}
 
         main_logger.debug(f"✅ {symbol} 1H data: {len(df_1h)} candles")
 
         # 15M data (LTF)
         df_15m = client.get_historical_klines(symbol, interval="15m", limit=200)
-        if df_15m.empty or len(df_15m) < 30:
-            main_logger.warning(f"⚠️ Insufficient 15M data for {symbol}: {len(df_15m)} candles (need 30)")
+        if df_15m.empty or len(df_15m) < 20:
+            main_logger.warning(f"⚠️ Insufficient 15M data for {symbol}: {len(df_15m)} candles (need 20)")
             return {"action": "none", "reason": "Insufficient 15M data"}
 
         main_logger.debug(f"✅ {symbol} 15M data: {len(df_15m)} candles")
