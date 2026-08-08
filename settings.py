@@ -129,6 +129,39 @@ class DCATradingConfig:
     min_volume_ratio: float = 0.5
     max_bb_width: float = 0.05
 
+    # Position Management (NEW)
+    max_active_positions: int = 3
+    max_position_size_pct: float = 0.5
+
+    # Trailing Stop (NEW)
+    trailing_stop_percent: float = 0.01
+    trailing_activation_pct: float = 0.02
+
+
+@dataclass
+class DCASetupConfig:
+    """DCA Setup Configuration for Futures Trading"""
+    # Price Settings
+    price_drop_steps: float = 0.01  # 1% per step
+    take_profit_per_round: float = 0.02  # 2% per round
+    investment_leverage: int = 10  # 10x leverage
+
+    # Order Margins
+    base_order_margin: float = 50.0  # USD
+    dca_order_margin: float = 50.0  # USD
+    max_dca_orders: int = 3
+    invested_margin: float = 0.0
+    auto_add_margin: bool = False
+
+    # Advanced Settings
+    price_deviation_multiplier: float = 1.0
+    dca_order_size_multiplier: float = 1.0
+
+    # Conditions
+    start_condition: str = "MARKET_PRICE"  # MARKET_PRICE, LIMIT, STOP
+    stop_condition: str = "TAKE_PROFIT"  # TAKE_PROFIT, STOP_LOSS, TIME
+    stop_loss_percent: float = 0.02  # 2%
+
 
 @dataclass
 class PerformanceConfig:
@@ -180,6 +213,7 @@ class Config:
         self.binance = BinanceConfig()
         self.market = MarketConfig()
         self.dca = DCATradingConfig()
+        self.dca_setup = DCASetupConfig()  # NEW
         self.performance = PerformanceConfig()
         self.telegram = TelegramConfig()
         self.mongodb = MongoDBConfig()
@@ -195,6 +229,7 @@ class Config:
         logger.info(f"✅ Position Size: ${self.dca.position_size_usd}")
         logger.info(f"✅ Stop Loss: {self.dca.stop_loss_percent*100:.1f}%")
         logger.info(f"✅ Exit Time: {self.dca.exit_hour:02d}:{self.dca.exit_minute:02d} UTC")
+        logger.info(f"✅ Max Active Positions: {self.dca.max_active_positions}")
 
     def _load_from_env(self):
         # ====== BINANCE ======
@@ -242,6 +277,29 @@ class Config:
             min_ltf_confirmation=safe_float_env("MIN_LTF_CONFIRMATION", 0.50, min_val=0.3, max_val=0.8),
             min_volume_ratio=safe_float_env("MIN_VOLUME_RATIO", 0.5, min_val=0.1, max_val=2.0),
             max_bb_width=safe_float_env("MAX_BB_WIDTH", 0.05, min_val=0.01, max_val=0.10),
+            # NEW: Position Management
+            max_active_positions=safe_int_env("MAX_ACTIVE_POSITIONS", 3, min_val=1, max_val=10),
+            max_position_size_pct=safe_float_env("MAX_POSITION_SIZE_PCT", 0.5, min_val=0.1, max_val=1.0),
+            # NEW: Trailing Stop
+            trailing_stop_percent=safe_float_env("TRAILING_STOP_PERCENT", 0.01, min_val=0.005, max_val=0.02),
+            trailing_activation_pct=safe_float_env("TRAILING_ACTIVATION_PCT", 0.02, min_val=0.01, max_val=0.05),
+        )
+
+        # ====== DCA SETUP (NEW) ======
+        self.dca_setup = DCASetupConfig(
+            price_drop_steps=safe_float_env("DCA_PRICE_DROP_STEPS", 0.01, min_val=0.001, max_val=0.05),
+            take_profit_per_round=safe_float_env("DCA_TAKE_PROFIT", 0.02, min_val=0.005, max_val=0.05),
+            investment_leverage=safe_int_env("DCA_LEVERAGE", 10, min_val=1, max_val=20),
+            base_order_margin=safe_float_env("DCA_BASE_MARGIN", 50.0, min_val=5, max_val=1000),
+            dca_order_margin=safe_float_env("DCA_ORDER_MARGIN", 50.0, min_val=5, max_val=1000),
+            max_dca_orders=safe_int_env("DCA_MAX_ORDERS", 3, min_val=1, max_val=10),
+            invested_margin=safe_float_env("DCA_INVESTED_MARGIN", 0.0),
+            auto_add_margin=safe_bool_env("DCA_AUTO_ADD_MARGIN", False),
+            price_deviation_multiplier=safe_float_env("DCA_PRICE_DEVIATION", 1.0, min_val=0.5, max_val=2.0),
+            dca_order_size_multiplier=safe_float_env("DCA_SIZE_MULTIPLIER", 1.0, min_val=0.5, max_val=2.0),
+            start_condition=os.getenv("DCA_START_CONDITION", "MARKET_PRICE"),
+            stop_condition=os.getenv("DCA_STOP_CONDITION", "TAKE_PROFIT"),
+            stop_loss_percent=safe_float_env("DCA_STOP_LOSS", 0.02, min_val=0.005, max_val=0.05),
         )
 
         # ====== PERFORMANCE ======
@@ -254,10 +312,11 @@ class Config:
         )
 
         # ====== TELEGRAM ======
+        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.telegram = TelegramConfig(
-            bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            bot_token=telegram_token,
             chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
-            enabled=bool(os.getenv("TELEGRAM_BOT_TOKEN", "")),
+            enabled=bool(telegram_token),
         )
 
         # ====== MONGODB ======
@@ -324,6 +383,13 @@ class Config:
         if not (self.dca.tp_level_1 < self.dca.tp_level_2 < self.dca.tp_level_3):
             warnings.append("TP levels should be increasing: TP1 < TP2 < TP3")
 
+        # Validate DCA Setup
+        if self.dca_setup.max_dca_orders < 1:
+            warnings.append("DCA_MAX_ORDERS should be at least 1")
+
+        if self.dca_setup.stop_loss_percent <= 0:
+            warnings.append("DCA_STOP_LOSS must be positive")
+
         for warning in warnings:
             logger.warning(f"Configuration warning: {warning}")
 
@@ -345,6 +411,7 @@ class Config:
         return self.deployment.run_mode == RunMode.DEMO
 
     def get_dca_config(self) -> Dict[str, Any]:
+        """Get DCA strategy configuration."""
         return {
             "dca_levels": self.dca.dca_levels,
             "dca_spacing": self.dca.dca_spacing,
@@ -358,6 +425,36 @@ class Config:
             "exit_hour": self.dca.exit_hour,
             "exit_minute": self.dca.exit_minute,
             "minutes_before_exit": self.dca.minutes_before_exit,
+            "max_active_positions": self.dca.max_active_positions,
+            "trailing_stop_percent": self.dca.trailing_stop_percent,
+            "trailing_activation_pct": self.dca.trailing_activation_pct,
+        }
+
+    def get_dca_setup_config(self) -> Dict[str, Any]:
+        """Get DCA setup configuration for display."""
+        total_margin = self.dca_setup.base_order_margin + (self.dca_setup.dca_order_margin * self.dca_setup.max_dca_orders)
+        max_loss = total_margin * self.dca_setup.stop_loss_percent
+        risk = self.dca_setup.stop_loss_percent
+        reward = self.dca_setup.take_profit_per_round
+        risk_reward = round(reward / risk, 2) if risk > 0 else 0
+
+        return {
+            "price_drop_steps": f"{self.dca_setup.price_drop_steps * 100:.1f}%",
+            "take_profit_per_round": f"{self.dca_setup.take_profit_per_round * 100:.1f}%",
+            "investment_leverage": f"{self.dca_setup.investment_leverage}x",
+            "base_order_margin": f"${self.dca_setup.base_order_margin:.2f}",
+            "dca_order_margin": f"${self.dca_setup.dca_order_margin:.2f}",
+            "max_dca_orders": self.dca_setup.max_dca_orders,
+            "invested_margin": f"${self.dca_setup.invested_margin:.2f}",
+            "auto_add_margin": "Enabled" if self.dca_setup.auto_add_margin else "Disabled",
+            "price_deviation_multiplier": self.dca_setup.price_deviation_multiplier,
+            "dca_order_size_multiplier": self.dca_setup.dca_order_size_multiplier,
+            "start_condition": self.dca_setup.start_condition,
+            "stop_condition": self.dca_setup.stop_condition,
+            "stop_loss_percent": f"{self.dca_setup.stop_loss_percent * 100:.1f}%",
+            "total_margin_required": f"${total_margin:.2f}",
+            "max_loss_per_trade": f"${max_loss:.2f}",
+            "risk_reward_ratio": risk_reward,
         }
 
 

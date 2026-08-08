@@ -1,7 +1,7 @@
 """
 Technical Indicators for DCA Day Trading
-Includes Super TDI + Bollinger Bands + Heikin-Ashi
-Version: 1.0.1 - FIXED Heikin-Ashi calculation
+Includes Super TDI + Bollinger Bands + Heikin-Ashi + ATR
+Version: 1.0.2 - Enhanced with ATR and improved error handling
 """
 
 import pandas as pd
@@ -16,7 +16,6 @@ def calculate_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate Heikin-Ashi candles from OHLC data.
     Returns DataFrame with additional HA columns.
-
     This implementation is robust and handles edge cases.
     """
     if df is None or df.empty:
@@ -92,6 +91,9 @@ def calculate_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
         # HA Close change percentage
         ha_df['ha_close_pct'] = ha_close.pct_change() * 100
 
+        # HA Price Range
+        ha_df['ha_range'] = ha_high - ha_low
+
         logger.debug(f"Heikin-Ashi calculated successfully with {len(ha_df)} rows")
 
     except Exception as e:
@@ -110,6 +112,7 @@ def calculate_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
         ha_df['ha_trend'] = 0
         ha_df['ha_momentum'] = 0.0
         ha_df['ha_close_pct'] = 0.0
+        ha_df['ha_range'] = 0.0
 
     return ha_df
 
@@ -124,6 +127,9 @@ class Indicators:
                       fast_period: int = 13, signal_period: int = 34) -> pd.DataFrame:
         """
         Calculate Super TDI (Trade Dynamic Index).
+
+        The Super TDI combines RSI-based moving averages with volatility bands
+        to identify trend direction and strength.
         """
         if df is None or df.empty:
             return df if df is not None else pd.DataFrame()
@@ -151,12 +157,12 @@ class Indicators:
             result['tdi_fast_ma'] = result['tdi_rsi'].rolling(window=fast_period).mean()
             result['tdi_slow_ma'] = result['tdi_rsi'].rolling(window=slow_period).mean()
 
-            # 3. Volatility Bands
+            # 3. Volatility Bands (similar to Bollinger Bands on RSI)
             tdi_std = result['tdi_rsi'].rolling(window=signal_period).std()
             result['tdi_upper_band'] = result['tdi_slow_ma'] + (2.0 * tdi_std)
             result['tdi_lower_band'] = result['tdi_slow_ma'] - (2.0 * tdi_std)
 
-            # 4. TDI Signal
+            # 4. TDI Signal (Market Baseline)
             result['tdi_signal'] = result['tdi_slow_ma'].rolling(window=7).mean()
 
             # 5. TDI Crossover Signals
@@ -165,24 +171,31 @@ class Indicators:
                 np.where(result['tdi_fast_ma'] < result['tdi_slow_ma'], -1, 0)
             )
 
-            # 6. TDI Zone
+            # 6. TDI Zone (0-100 scaling)
             result['tdi_zone'] = result['tdi_slow_ma']
 
-            # 7. TDI Strength
+            # 7. TDI Strength (momentum)
             result['tdi_momentum'] = result['tdi_rsi'] - result['tdi_slow_ma']
 
-            # 8. TDI Trend Score
+            # 8. TDI Trend Score (0-3 scale)
             result['tdi_trend_score'] = (
                 (result['tdi_fast_ma'] > result['tdi_slow_ma']).astype(int) * 2 +
                 (result['tdi_rsi'] > 50).astype(int) * 1
             )
 
-            # 9. TDI Signal Strength
-            result['tdi_signal_strength'] = abs(result['tdi_momentum']) / 50
+            # 9. TDI Signal Strength (0-1 scale)
+            result['tdi_signal_strength'] = np.abs(result['tdi_momentum']) / 50
+            result['tdi_signal_strength'] = result['tdi_signal_strength'].clip(0, 1)
+
+            # 10. TDI Trend Status
+            result['tdi_trend_up'] = (result['tdi_fast_ma'] > result['tdi_slow_ma']).astype(int)
+            result['tdi_trend_down'] = (result['tdi_fast_ma'] < result['tdi_slow_ma']).astype(int)
 
             # Fill NaN values
-            for col in ['tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_upper_band',
-                       'tdi_lower_band', 'tdi_signal', 'tdi_momentum', 'tdi_signal_strength']:
+            tdi_cols = ['tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_upper_band',
+                       'tdi_lower_band', 'tdi_signal', 'tdi_momentum', 'tdi_signal_strength',
+                       'tdi_zone', 'tdi_trend_score']
+            for col in tdi_cols:
                 if col in result.columns:
                     result[col] = result[col].fillna(50)
 
@@ -191,8 +204,10 @@ class Indicators:
             import traceback
             logger.error(traceback.format_exc())
             # Set default values
-            for col in ['tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_upper_band',
-                       'tdi_lower_band', 'tdi_signal', 'tdi_momentum', 'tdi_signal_strength']:
+            tdi_cols = ['tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_upper_band',
+                       'tdi_lower_band', 'tdi_signal', 'tdi_momentum', 'tdi_signal_strength',
+                       'tdi_zone', 'tdi_trend_score']
+            for col in tdi_cols:
                 result[col] = 50
 
         return result
@@ -202,6 +217,10 @@ class Indicators:
                                   dev: float = 1.750) -> pd.DataFrame:
         """
         Calculate Bollinger Bands with standard deviation.
+
+        Parameters:
+        - period: Moving average period (default 34)
+        - dev: Number of standard deviations (default 1.750)
         """
         if df is None or df.empty:
             return df if df is not None else pd.DataFrame()
@@ -213,19 +232,37 @@ class Indicators:
         result = df.copy()
 
         try:
+            # Calculate moving average
             result['bb_ma'] = result['close'].rolling(window=period).mean()
+
+            # Calculate standard deviation
             result['bb_std'] = result['close'].rolling(window=period).std()
+
+            # Calculate upper and lower bands
             result['bb_upper'] = result['bb_ma'] + (dev * result['bb_std'])
             result['bb_lower'] = result['bb_ma'] - (dev * result['bb_std'])
+
+            # Calculate bandwidth
             result['bb_width'] = result['bb_upper'] - result['bb_lower']
             result['bb_width_percent'] = result['bb_width'] / result['bb_ma']
+
+            # Calculate position within bands (0 to 1)
             result['bb_position'] = (result['close'] - result['bb_lower']) / result['bb_width']
+
+            # Bollinger Band %B (0 = lower, 1 = upper)
             result['bb_percent_b'] = (result['close'] - result['bb_lower']) / (result['bb_upper'] - result['bb_lower'])
+
+            # Band squeeze detection
+            result['bb_squeeze'] = result['bb_width_percent'] < result['bb_width_percent'].rolling(20).mean()
+
+            # Band width ratio
+            result['bb_width_ratio'] = result['bb_width'] / result['bb_width'].rolling(50).mean()
 
             # Fill NaN values
             result['bb_position'] = result['bb_position'].fillna(0.5)
             result['bb_percent_b'] = result['bb_percent_b'].fillna(0.5)
             result['bb_width_percent'] = result['bb_width_percent'].fillna(0.01)
+            result['bb_width_ratio'] = result['bb_width_ratio'].fillna(1.0)
 
         except Exception as e:
             logger.error(f"Error calculating Bollinger Bands: {e}")
@@ -241,15 +278,24 @@ class Indicators:
         result = df.copy()
 
         try:
+            # Volume moving average
             result['volume_ma'] = result['volume'].rolling(window=period).mean()
+
+            # Volume ratio (current / average)
             result['volume_ratio'] = result['volume'] / result['volume_ma']
             result['volume_ratio'] = result['volume_ratio'].fillna(1.0)
+
+            # Volume spike detection
             result['volume_spike'] = result['volume_ratio'] > 1.5
 
-            # VWAP calculation
+            # Volume Weighted Average Price (VWAP)
             typical_price = (result['high'] + result['low'] + result['close']) / 3
             result['vwap'] = (typical_price * result['volume']).cumsum() / result['volume'].cumsum()
             result['vwap'] = result['vwap'].fillna(result['close'])
+
+            # Volume profile - price levels with high volume
+            result['volume_high'] = result['volume'].rolling(window=10).max()
+            result['volume_low'] = result['volume'].rolling(window=10).min()
 
         except Exception as e:
             logger.error(f"Error calculating volume profile: {e}")
@@ -292,6 +338,9 @@ class Indicators:
             result['stoch_k'] = result['stoch_k'].fillna(50)
             result['stoch_d'] = result['stoch_d'].fillna(50)
 
+            # ROC (Rate of Change)
+            result['roc'] = (result['close'] / result['close'].shift(10) - 1) * 100
+
         except Exception as e:
             logger.error(f"Error calculating momentum oscillators: {e}")
 
@@ -309,13 +358,21 @@ class Indicators:
         result = df.copy()
 
         try:
+            # Pivot points using recent highs and lows
             recent_high = df['high'].rolling(window=lookback).max()
             recent_low = df['low'].rolling(window=lookback).min()
+
             result['resistance_1'] = recent_high
             result['support_1'] = recent_low
+
+            # Central pivot
             result['pivot'] = (recent_high + recent_low + df['close']) / 3
+
+            # Secondary S/R levels
             result['resistance_2'] = (recent_high * 2) - recent_low
             result['support_2'] = (recent_low * 2) - recent_high
+
+            # Price position relative to pivot
             result['price_position'] = (df['close'] - result['pivot']) / (result['resistance_1'] - result['support_1'])
 
         except Exception as e:
@@ -335,14 +392,21 @@ class Indicators:
         result = df.copy()
 
         try:
+            # Linear regression slope (simple trend strength)
             x = np.arange(len(df))
             slope = np.polyfit(x, df['close'].values, 1)[0]
             result['trend_slope'] = slope / df['close'].mean()
+
+            # Directional movement
             result['trend_up'] = (df['close'] > df['close'].shift(1)).astype(int)
             result['trend_down'] = (df['close'] < df['close'].shift(1)).astype(int)
+
+            # Trend persistence
             result['trend_persistence'] = result['trend_up'].rolling(window=5).sum() - result['trend_down'].rolling(window=5).sum()
+
+            # Normalized trend strength (-1 to 1)
             result['trend_strength'] = result['trend_persistence'] / 5
-            result['trend_strength'] = result['trend_strength'].fillna(0)
+            result['trend_strength'] = result['trend_strength'].fillna(0).clip(-1, 1)
 
         except Exception as e:
             logger.error(f"Error calculating trend strength: {e}")
@@ -351,7 +415,7 @@ class Indicators:
 
     @staticmethod
     def calculate_volatility(df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate volatility metrics."""
+        """Calculate volatility metrics including ATR."""
         if df is None or df.empty:
             return df if df is not None else pd.DataFrame()
 
@@ -361,17 +425,33 @@ class Indicators:
         result = df.copy()
 
         try:
+            # True Range
             high_low = df['high'] - df['low']
-            high_close = abs(df['high'] - df['close'].shift())
-            low_close = abs(df['low'] - df['close'].shift())
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+
             result['tr'] = high_low.combine(high_close, max).combine(low_close, max)
+
+            # Average True Range (ATR) - used for dynamic DCA spacing
             result['atr'] = result['tr'].rolling(window=14).mean()
+
+            # ATR percentage (ATR / Price)
+            result['atr_percent'] = result['atr'] / df['close'] * 100
+
+            # Volatility ratio (current ATR / average ATR)
             result['volatility_ratio'] = result['atr'] / result['atr'].rolling(window=50).mean()
+
+            # Normalized volatility
             result['normalized_volatility'] = result['atr'] / df['close'] * 100
+
+            # Bollinger Band volatility
+            result['bb_volatility'] = (df['high'] - df['low']) / df['close'] * 100
 
             # Fill NaN values
             result['volatility_ratio'] = result['volatility_ratio'].fillna(1.0)
             result['normalized_volatility'] = result['normalized_volatility'].fillna(0)
+            result['atr_percent'] = result['atr_percent'].fillna(0)
+            result['bb_volatility'] = result['bb_volatility'].fillna(0)
 
         except Exception as e:
             logger.error(f"Error calculating volatility: {e}")
@@ -411,6 +491,7 @@ class Indicators:
                 work_df['ha_trend'] = 0
                 work_df['ha_momentum'] = 0.0
                 work_df['ha_close_pct'] = 0.0
+                work_df['ha_range'] = 0.0
 
             # Step 2: Calculate TDI
             work_df = Indicators.calculate_tdi(work_df)
@@ -430,7 +511,7 @@ class Indicators:
             # Step 7: Calculate Trend Strength
             work_df = Indicators.calculate_trend_strength(work_df)
 
-            # Step 8: Calculate Volatility
+            # Step 8: Calculate Volatility (includes ATR)
             work_df = Indicators.calculate_volatility(work_df)
 
             logger.debug(f"All indicators calculated successfully for {len(work_df)} rows")
@@ -441,9 +522,12 @@ class Indicators:
             logger.error(traceback.format_exc())
 
             # Ensure essential columns exist even if calculation fails
-            essential_cols = ['ha_open', 'ha_close', 'ha_high', 'ha_low', 'ha_color',
-                            'tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_zone',
-                            'bb_ma', 'bb_upper', 'bb_lower', 'bb_position']
+            essential_cols = [
+                'ha_open', 'ha_close', 'ha_high', 'ha_low', 'ha_color',
+                'tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_zone',
+                'bb_ma', 'bb_upper', 'bb_lower', 'bb_position',
+                'atr', 'atr_percent', 'volume_ratio', 'rsi'
+            ]
             for col in essential_cols:
                 if col not in work_df.columns:
                     if col.startswith('ha_'):
@@ -457,17 +541,63 @@ class Indicators:
                             work_df[col] = work_df['low']
                         elif col == 'ha_color':
                             work_df[col] = 0
-                    elif col in ['tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_zone']:
+                    elif col in ['tdi_rsi', 'tdi_fast_ma', 'tdi_slow_ma', 'tdi_zone', 'rsi']:
                         work_df[col] = 50
                     elif col in ['bb_ma', 'bb_upper', 'bb_lower']:
                         work_df[col] = work_df['close']
                     elif col == 'bb_position':
                         work_df[col] = 0.5
+                    elif col in ['atr', 'atr_percent', 'volume_ratio']:
+                        work_df[col] = 0.0
 
         return work_df
+
+    @staticmethod
+    def get_indicator_summary(df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Get a summary of the latest indicator values.
+        Useful for debugging and monitoring.
+        """
+        if df is None or df.empty:
+            return {}
+
+        last = df.iloc[-1]
+
+        return {
+            'tdi': {
+                'rsi': last.get('tdi_rsi', 50),
+                'fast_ma': last.get('tdi_fast_ma', 50),
+                'slow_ma': last.get('tdi_slow_ma', 50),
+                'zone': last.get('tdi_zone', 'NEUTRAL'),
+                'momentum': last.get('tdi_momentum', 0),
+                'signal_strength': last.get('tdi_signal_strength', 0),
+            },
+            'bollinger': {
+                'ma': last.get('bb_ma', 0),
+                'upper': last.get('bb_upper', 0),
+                'lower': last.get('bb_lower', 0),
+                'position': last.get('bb_position', 0.5),
+                'width_percent': last.get('bb_width_percent', 0),
+            },
+            'volatility': {
+                'atr': last.get('atr', 0),
+                'atr_percent': last.get('atr_percent', 0),
+                'normalized_volatility': last.get('normalized_volatility', 0),
+            },
+            'volume': {
+                'ratio': last.get('volume_ratio', 1.0),
+                'spike': last.get('volume_spike', False),
+            },
+            'heikin_ashi': {
+                'color': 'BULLISH' if last.get('ha_color', 0) == 1 else 'BEARISH',
+                'body': last.get('ha_body', 0),
+                'momentum': last.get('ha_momentum', 0),
+                'trend': last.get('ha_trend', 0),
+            }
+        }
 
 
 __all__ = [
     "Indicators",
-    "calculate_heikin_ashi"
+    "calculate_heikin_ashi",
 ]

@@ -2,7 +2,7 @@
 """
 DCA Day Trading Bot - Main Entry Point
 Hybrid DCA Strategy with Multi-Timeframe Analysis & Signal Manager
-Version: 1.0.1 - Fixed DCA Logic with Time Delays
+Version: 1.0.2 - Enhanced with DCA Setup and Performance Tracking
 """
 
 import os
@@ -26,6 +26,7 @@ from strategy.dca_hybrid_strategy import dca_strategy
 from utils.telegram_bot import telegram_bot
 from utils.mongodb_client import mongodb_client
 from utils.signal_manager import signal_manager, SignalType, SignalPriority, SignalStatus, TradingSignal
+from utils.dca_setup_manager import dca_setup_manager  # NEW
 
 # Configure logging
 logging.basicConfig(
@@ -71,6 +72,7 @@ EMOJI = {
     "HEARTBEAT": "💓",
     "SCAN": "🔄",
     "COOLDOWN": "⏱️",
+    "SETUP": "⚙️",
 }
 
 # Global state
@@ -104,25 +106,30 @@ bot_stats: Dict[str, Any] = {
     "last_status_sent": None,
     "last_heartbeat": None,
     "last_price_time": None,
-    "symbol_last_entry": {},  # Track last entry time per symbol
+    "symbol_last_entry": {},
+    "dca_setups_created": 0,  # NEW
+    "dca_setups_completed": 0,  # NEW
 }
 
 # ========== POSITION SIZE ==========
 POSITION_SIZE_USD = config.dca.position_size_usd
 
 # ========== SIGNAL CONFIGURATION ==========
-MAX_PENDING_SIGNALS_PER_SYMBOL = 1  # Reduce to 1 to prevent duplicates
-SIGNAL_EXPIRY_SECONDS = 300  # Increase to 5 minutes
-SIGNAL_COOLDOWN_SECONDS = 300  # Increase to 5 minutes
+MAX_PENDING_SIGNALS_PER_SYMBOL = 1
+SIGNAL_EXPIRY_SECONDS = 300
+SIGNAL_COOLDOWN_SECONDS = 300
 
 # ========== STATUS REPORTING ==========
-# Send status once per day at a specific time (e.g., 00:05 UTC)
-STATUS_HOUR = 0  # Midnight UTC
-STATUS_MINUTE = 5  # 5 minutes past midnight
+STATUS_HOUR = 0
+STATUS_MINUTE = 5
 
 # ========== HEARTBEAT CONFIGURATION ==========
-# Log heartbeat every N cycles (~1 minute with 6 symbols at 10s interval)
 HEARTBEAT_INTERVAL_CYCLES = 2
+
+# ========== DCA SETUP CONFIGURATION ==========
+DCA_SETUP_INTERVAL_HOURS = 24  # Send DCA setup every 24 hours
+_last_dca_setup_sent: Dict[str, datetime] = {}
+
 
 # ========== HELPER: JSON Serializer ==========
 def json_serializer(obj):
@@ -222,25 +229,94 @@ class BinanceDataClient:
         return df
 
 
+# ==================== DCA SETUP FUNCTIONS ====================
+
+def send_dca_setup_for_symbol(symbol: str, current_price: float, force: bool = False) -> None:
+    """
+    Send DCA setup information for a symbol to Telegram.
+    """
+    if not telegram_bot.enabled:
+        return
+
+    # Rate limit: only send once per DCA_SETUP_INTERVAL_HOURS
+    if not force:
+        if symbol in _last_dca_setup_sent:
+            time_since = (datetime.now() - _last_dca_setup_sent[symbol]).total_seconds()
+            if time_since < (DCA_SETUP_INTERVAL_HOURS * 3600):
+                return
+
+    try:
+        # Get setup info
+        setup_info = dca_setup_manager.get_setup_info(symbol, current_price)
+
+        # Send to Telegram
+        telegram_bot.send_dca_setup(symbol, setup_info, current_price, force)
+        _last_dca_setup_sent[symbol] = datetime.now()
+
+        main_logger.info(f"{EMOJI['SETUP']} DCA Setup sent for {symbol}")
+
+        # Create setup signal
+        signal_manager.create_signal(
+            symbol=symbol,
+            signal_type=SignalType.DCA_SETUP,
+            direction="NEUTRAL",
+            price=current_price,
+            quantity=1.0,
+            priority=SignalPriority.NORMAL,
+            setup_info=setup_info
+        )
+
+    except Exception as e:
+        main_logger.error(f"Failed to send DCA setup for {symbol}: {e}")
+
+
+def send_all_dca_setups() -> None:
+    """
+    Send DCA setup for all symbols.
+    """
+    if not telegram_bot.enabled:
+        return
+
+    main_logger.info(f"{EMOJI['SETUP']} Sending DCA setups for all symbols...")
+
+    for symbol in config.market.symbols:
+        try:
+            current_price = get_current_price_for_symbol(symbol)
+            if current_price:
+                send_dca_setup_for_symbol(symbol, current_price, force=True)
+        except Exception as e:
+            main_logger.error(f"Failed to send DCA setup for {symbol}: {e}")
+
+
+def get_current_price_for_symbol(symbol: str) -> Optional[float]:
+    """
+    Get current price for a symbol using Binance API.
+    """
+    try:
+        import requests
+        response = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=5)
+        if response.status_code == 200:
+            return float(response.json()['price'])
+    except Exception as e:
+        main_logger.debug(f"Failed to get price for {symbol}: {e}")
+    return None
+
+
 # ==================== SIGNAL HELPER FUNCTIONS ====================
 
 def can_generate_signal(symbol: str) -> Tuple[bool, str]:
     """Check if we can generate a new signal for a symbol."""
-    # Check if symbol is already locked
     if signal_manager.is_symbol_locked(symbol):
         return False, "Symbol already locked with active signal"
 
-    # Check pending signals count
     pending = signal_manager.get_pending_signals(symbol)
     if len(pending) >= MAX_PENDING_SIGNALS_PER_SYMBOL:
         return False, f"Too many pending signals ({len(pending)})"
 
-    # Check if there's a recent signal (cooldown)
     recent_signals = signal_manager.get_recent_signals(symbol, seconds=SIGNAL_COOLDOWN_SECONDS)
     if recent_signals:
         return False, f"Cooldown active ({SIGNAL_COOLDOWN_SECONDS}s)"
 
-    # Check if we have a recent entry for this symbol
     if symbol in bot_stats['symbol_last_entry']:
         last_entry = bot_stats['symbol_last_entry'][symbol]
         time_since = (datetime.now() - last_entry).total_seconds()
@@ -305,7 +381,6 @@ def create_dca_signal(symbol: str, signal_type: str, entry_price: float,
 def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
     """Process a symbol for DCA hybrid strategy with Signal Manager."""
     try:
-        # ===== DEBUG: Starting processing =====
         main_logger.debug(f"🔍 Processing {symbol}...")
 
         # ===== 1. FETCH ALL TIMEFRAMES =====
@@ -314,33 +389,29 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
             main_logger.warning(f"⚠️ No price for {symbol}")
             return {"action": "none", "reason": "No price"}
 
-        # Track that we got a price
         bot_stats['last_price_time'] = datetime.now()
         main_logger.debug(f"✅ {symbol} price: ${current_price:.2f}")
 
-        # 4H data (HTF) - Reduced minimum required to 15 candles
-        df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)
-        if df_4h.empty or len(df_4h) < 15:
-            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles (need 15)")
+        # Send DCA setup if needed (NEW)
+        send_dca_setup_for_symbol(symbol, current_price)
+
+        # 4H data (HTF)
+        df_4h = client.get_historical_klines(symbol, interval="4h", limit=100)
+        if df_4h.empty or len(df_4h) < 20:
+            main_logger.warning(f"⚠️ Insufficient 4H data for {symbol}: {len(df_4h)} candles (need 20)")
             return {"action": "none", "reason": "Insufficient 4H data"}
 
-        main_logger.debug(f"✅ {symbol} 4H data: {len(df_4h)} candles")
-
         # 1H data (MTF)
-        df_1h = client.get_historical_klines(symbol, interval="1h", limit=100)
+        df_1h = client.get_historical_klines(symbol, interval="1h", limit=200)
         if df_1h.empty or len(df_1h) < 20:
             main_logger.warning(f"⚠️ Insufficient 1H data for {symbol}: {len(df_1h)} candles (need 20)")
             return {"action": "none", "reason": "Insufficient 1H data"}
 
-        main_logger.debug(f"✅ {symbol} 1H data: {len(df_1h)} candles")
-
         # 15M data (LTF)
-        df_15m = client.get_historical_klines(symbol, interval="15m", limit=200)
+        df_15m = client.get_historical_klines(symbol, interval="15m", limit=300)
         if df_15m.empty or len(df_15m) < 20:
             main_logger.warning(f"⚠️ Insufficient 15M data for {symbol}: {len(df_15m)} candles (need 20)")
             return {"action": "none", "reason": "Insufficient 15M data"}
-
-        main_logger.debug(f"✅ {symbol} 15M data: {len(df_15m)} candles")
 
         # ===== 2. MULTI-TIMEFRAME ANALYSIS =====
         market_context = dca_strategy.analyze_multi_timeframe(
@@ -368,17 +439,14 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         # ===== 3. CHECK ACTIVE POSITION =====
         if symbol in dca_strategy.active_positions:
             position = dca_strategy.active_positions[symbol]
-            
-            # Check if we've recently added a DCA level (cooldown)
+
             if position.last_dca_time:
                 time_since_dca = (datetime.now() - position.last_dca_time).total_seconds()
                 if time_since_dca < dca_strategy.MIN_DCA_INTERVAL_SECONDS:
                     remaining = int(dca_strategy.MIN_DCA_INTERVAL_SECONDS - time_since_dca)
                     main_logger.debug(f"{EMOJI['COOLDOWN']} {symbol}: DCA cooldown: {remaining}s remaining")
-                    # Don't process exit/entry further, wait for cooldown
                     return {"action": "cooldown", "reason": f"Cooldown: {remaining}s"}
 
-            # Check exit
             exit_check = dca_strategy.check_exit(symbol, current_price, datetime.now())
 
             if exit_check['should_exit']:
@@ -406,7 +474,20 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     )
 
                     if position_result:
-                        signal_manager.execute_signal(exit_signal.signal_id, exit_check['exit_price'])
+                        signal_manager.execute_signal(
+                            exit_signal.signal_id,
+                            exit_check['exit_price'],
+                            pnl=position_result.realized_pnl,
+                            pnl_percent=position_result.realized_pnl / position_result.total_cost * 100 if position_result.total_cost > 0 else 0
+                        )
+
+                        # Update DCA setup status
+                        signal_manager.update_dca_setup_status(
+                            symbol,
+                            "CLOSED",
+                            exit_price=exit_check['exit_price'],
+                            pnl=position_result.realized_pnl
+                        )
 
                         bot_stats['dca_exits'] += 1
                         bot_stats['active_positions'] = len(dca_strategy.active_positions)
@@ -423,7 +504,6 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                         bot_stats['daily_pnl'] = dca_strategy.daily_pnl
                         bot_stats['signal_outcomes']['total_pnl'] += position_result.realized_pnl
 
-                        # Remove symbol from last entry tracking
                         if symbol in bot_stats['symbol_last_entry']:
                             del bot_stats['symbol_last_entry'][symbol]
 
@@ -457,7 +537,6 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                             "signal_id": exit_signal.signal_id
                         }
 
-            # Check next DCA level
             entry_check = dca_strategy.should_enter_dca(symbol, current_price, df_15m, market_context)
 
             if entry_check['should_enter']:
@@ -466,7 +545,6 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     f"Level {entry_check['level']} @ ${entry_check['entry_price']:.4f}"
                 )
 
-                # Check if we can generate a signal
                 can_gen, reason = can_generate_signal(symbol)
                 if not can_gen:
                     main_logger.debug(f"{EMOJI['PENDING']} Signal blocked for {symbol}: {reason}")
@@ -500,7 +578,9 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     if success:
                         signal_manager.execute_signal(entry_signal.signal_id, entry_check['entry_price'])
 
-                        # Update last entry time for this symbol
+                        # Update DCA setup status
+                        signal_manager.update_dca_setup_status(symbol, "ACTIVE_TRADE", entry_price=entry_check['entry_price'])
+
                         bot_stats['symbol_last_entry'][symbol] = datetime.now()
 
                         bot_stats['dca_entries'] += 1
@@ -542,7 +622,6 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
         # ===== 4. NO POSITION - CHECK NEW ENTRY =====
         else:
-            # Check if we can generate a signal
             can_gen, reason = can_generate_signal(symbol)
             if not can_gen:
                 main_logger.debug(f"{EMOJI['PENDING']} New position blocked for {symbol}: {reason}")
@@ -584,7 +663,9 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                     if success:
                         signal_manager.execute_signal(entry_signal.signal_id, entry_check['entry_price'])
 
-                        # Update last entry time for this symbol
+                        # Update DCA setup status
+                        signal_manager.update_dca_setup_status(symbol, "ACTIVE_TRADE", entry_price=entry_check['entry_price'])
+
                         bot_stats['symbol_last_entry'][symbol] = datetime.now()
 
                         bot_stats['dca_entries'] += 1
@@ -624,7 +705,6 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
                             "signal_id": entry_signal.signal_id
                         }
 
-        # Clean up expired signals
         signal_manager.check_expired_signals()
 
         pending_signals = len(signal_manager.get_pending_signals())
@@ -652,6 +732,8 @@ def check_signal_manager_status():
         bot_stats['signals_rejected'] = stats.get('rejected_signals', 0)
         bot_stats['signals_expired'] = stats.get('expired_signals', 0)
         bot_stats['duplicate_signals_prevented'] = stats.get('duplicate_signals_prevented', 0)
+        bot_stats['dca_setups_created'] = stats.get('dca_setups_created', 0)
+        bot_stats['dca_setups_completed'] = stats.get('dca_setups_completed', 0)
     except Exception as e:
         main_logger.debug(f"Signal manager stats error: {e}")
 
@@ -665,6 +747,7 @@ def send_dca_status():
 
     stats = dca_strategy.get_daily_stats()
     signal_stats = signal_manager.get_stats()
+    performance = signal_manager.get_performance_summary()
 
     message = f"""
 📊 <b>DCA Day Trading Status</b>
@@ -683,6 +766,16 @@ def send_dca_status():
 • Pending: <b>{len(signal_manager.get_pending_signals())}</b>
 • Generated: <b>{signal_stats.get('total_signals', 0)}</b>
 • Duplicates Prevented: <b>{bot_stats.get('duplicate_signals_prevented', 0)}</b>
+
+⚙️ <b>DCA Setups</b>
+• Created: <b>{bot_stats.get('dca_setups_created', 0)}</b>
+• Active: <b>{signal_stats.get('dca_setups_active', 0)}</b>
+• Completed: <b>{bot_stats.get('dca_setups_completed', 0)}</b>
+
+📊 <b>Performance</b>
+• Total PnL: <b>${performance.get('total_pnl', 0):.2f}</b>
+• Total Trades: <b>{performance.get('total_trades', 0)}</b>
+• Win Rate: <b>{performance.get('win_rate', 0):.1f}%</b>
 
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -710,6 +803,7 @@ def send_daily_performance_summary():
         return
 
     stats = dca_strategy.get_daily_stats()
+    performance = signal_manager.get_performance_summary()
 
     message = f"""
 📊 <b>DAILY PERFORMANCE SUMMARY</b>
@@ -736,6 +830,18 @@ def send_daily_performance_summary():
 • Expired: <b>{bot_stats['signals_expired']}</b>
 • Duplicates Prevented: <b>{bot_stats['duplicate_signals_prevented']}</b>
 
+<b>Overall Performance:</b>
+• Total PnL: <b>${performance.get('total_pnl', 0):.2f}</b>
+• Total Trades: <b>{performance.get('total_trades', 0)}</b>
+• Win Rate: <b>{performance.get('win_rate', 0):.1f}%</b>
+• Avg PnL: <b>${performance.get('average_pnl', 0):.2f}</b>
+• Best Trade: <b>${performance.get('best_trade', 0):.2f}</b>
+• Worst Trade: <b>${performance.get('worst_trade', 0):.2f}</b>
+
+⚙️ <b>DCA Setups:</b>
+• Active: <b>{signal_manager.get_stats().get('dca_setups_active', 0)}</b>
+• Completed: <b>{signal_manager.get_stats().get('dca_setups_completed', 0)}</b>
+
 🕐 {datetime.now().strftime('%H:%M:%S')}
 """
     telegram_bot.send_message(message)
@@ -751,8 +857,8 @@ def log_heartbeat(cycle_count: int):
     active_signals = len(signal_manager.active_signals)
     pending_signals = len(signal_manager.get_pending_signals())
     errors = bot_stats['errors']
+    dca_setups_active = signal_manager.get_stats().get('dca_setups_active', 0)
 
-    # Check if we're getting data
     last_price = bot_stats.get('last_price_time')
     if last_price:
         seconds_since_price = (now - last_price).seconds
@@ -767,6 +873,7 @@ def log_heartbeat(cycle_count: int):
         f"Price: {price_status} | "
         f"Positions: {active_positions} | "
         f"Signals: {active_signals} active, {pending_signals} pending | "
+        f"DCA Setups: {dca_setups_active} active | "
         f"Daily PnL: ${dca_strategy.daily_pnl:.2f} | "
         f"Errors: {errors} | "
         f"Duplicates Blocked: {bot_stats['duplicate_signals_prevented']}"
@@ -812,6 +919,7 @@ def run_processing_loop():
     main_logger.info(f"{EMOJI['SIGNAL']} Signal Manager: Active")
     main_logger.info(f"{EMOJI['INFO']} Status Reports: Daily at {STATUS_HOUR:02d}:{STATUS_MINUTE:02d} UTC")
     main_logger.info(f"{EMOJI['HEARTBEAT']} Heartbeat every {HEARTBEAT_INTERVAL_CYCLES} cycles (~1 minute)")
+    main_logger.info(f"{EMOJI['SETUP']} DCA Setup reports every {DCA_SETUP_INTERVAL_HOURS} hours")
 
     cycle_count = 0
 
@@ -896,12 +1004,16 @@ def run_processing_loop():
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/health':
+        if self.path.startswith('/dca-setup'):
+            self._handle_dca_setup()
+        elif self.path == '/health':
             self._handle_health()
         elif self.path == '/metrics':
             self._handle_metrics()
         elif self.path == '/signals':
             self._handle_signals()
+        elif self.path == '/performance':
+            self._handle_performance()
         else:
             self._handle_root()
 
@@ -917,10 +1029,48 @@ class HealthHandler(BaseHTTPRequestHandler):
                 <li><a href='/health'>Health Status</a></li>
                 <li><a href='/metrics'>Metrics</a></li>
                 <li><a href='/signals'>Signal Status</a></li>
+                <li><a href='/performance'>Performance</a></li>
+                <li><a href='/dca-setup?symbol=BTCUSDT'>DCA Setup</a></li>
             </ul>
         </body>
         </html>
         """)
+
+    def _handle_dca_setup(self):
+        """Handle DCA setup request."""
+        try:
+            from urllib.parse import urlparse, parse_qs
+
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            symbol = params.get('symbol', ['BTCUSDT'])[0]
+
+            # Get current price
+            current_price = self._get_price(symbol)
+
+            # Get setup info
+            setup_info = dca_setup_manager.get_setup_info(symbol, current_price)
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(setup_info, indent=2, default=str).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def _get_price(self, symbol: str) -> Optional[float]:
+        """Get current price for a symbol."""
+        try:
+            import requests
+            response = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=5)
+            if response.status_code == 200:
+                return float(response.json()['price'])
+        except:
+            pass
+        return None
 
     def _handle_health(self):
         signal_stats = signal_manager.get_stats()
@@ -940,6 +1090,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "rejected_signals": signal_stats.get('rejected_signals', 0),
                 "expired_signals": signal_stats.get('expired_signals', 0),
                 "duplicate_signals_prevented": signal_stats.get('duplicate_signals_prevented', 0),
+                "dca_setups_active": signal_stats.get('dca_setups_active', 0),
+                "dca_setups_completed": signal_stats.get('dca_setups_completed', 0),
             },
             "strategy": {
                 "dca_levels": dca_strategy.DCA_LEVELS,
@@ -956,6 +1108,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def _handle_metrics(self):
         signal_stats = signal_manager.get_stats()
+        performance = signal_manager.get_performance_summary()
         metrics = [
             f"dca_active_positions {len(dca_strategy.active_positions)}",
             f"dca_daily_pnl {dca_strategy.daily_pnl:.2f}",
@@ -971,6 +1124,11 @@ class HealthHandler(BaseHTTPRequestHandler):
             f"signal_rejected {signal_stats.get('rejected_signals', 0)}",
             f"signal_expired {signal_stats.get('expired_signals', 0)}",
             f"signal_duplicates_prevented {signal_stats.get('duplicate_signals_prevented', 0)}",
+            f"dca_setups_active {signal_stats.get('dca_setups_active', 0)}",
+            f"dca_setups_completed {signal_stats.get('dca_setups_completed', 0)}",
+            f"performance_total_pnl {performance.get('total_pnl', 0):.2f}",
+            f"performance_win_rate {performance.get('win_rate', 0):.2f}",
+            f"performance_total_trades {performance.get('total_trades', 0)}",
         ]
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain')
@@ -1014,13 +1172,29 @@ class HealthHandler(BaseHTTPRequestHandler):
                         'signal_id': s.get('signal_id'),
                     }
                     for s in pending_signals[:10]
-                ]
+                ],
+                "dca_setups": dca_setup_manager.get_all_dca_setups()
             }
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(status, indent=2, default=json_serializer).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def _handle_performance(self):
+        """Handle performance endpoint."""
+        try:
+            performance = signal_manager.get_performance_summary()
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(performance, indent=2, default=json_serializer).encode())
         except Exception as e:
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
@@ -1083,6 +1257,14 @@ def main():
     main_logger.info(f"  - Rejected: {signal_stats.get('rejected_signals', 0)}")
     main_logger.info(f"  - Expired: {signal_stats.get('expired_signals', 0)}")
     main_logger.info(f"  - Duplicates Prevented: {signal_stats.get('duplicate_signals_prevented', 0)}")
+    main_logger.info(f"  - DCA Setups Active: {signal_stats.get('dca_setups_active', 0)}")
+    main_logger.info(f"  - DCA Setups Completed: {signal_stats.get('dca_setups_completed', 0)}")
+
+    performance = signal_manager.get_performance_summary()
+    main_logger.info(f"{EMOJI['PROFIT']} Final Performance:")
+    main_logger.info(f"  - Total PnL: ${performance.get('total_pnl', 0):.2f}")
+    main_logger.info(f"  - Total Trades: {performance.get('total_trades', 0)}")
+    main_logger.info(f"  - Win Rate: {performance.get('win_rate', 0):.1f}%")
 
     main_logger.info(f"{EMOJI['STOP']} Shutting down...")
 

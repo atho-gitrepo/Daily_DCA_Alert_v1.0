@@ -1,7 +1,7 @@
 """
 Telegram Bot Integration for DCA Day Trading
-Sends notifications for entries, exits, and daily summaries
-Version: 1.0.0
+Sends notifications for entries, exits, daily summaries, and DCA setup
+Version: 1.0.1 - Added DCA Setup and Performance notifications
 """
 
 import logging
@@ -36,6 +36,14 @@ EMOJI = {
     "FIRE": "🔥",
     "TRIANGLE": "🔺",
     "DASH": "➖",
+    "SETUP": "⚙️",
+    "CONFIG": "🔧",
+    "LEVEL": "📈",
+    "MARGIN": "💵",
+    "RISK": "🛡️",
+    "TRENDING": "📉",
+    "STOP_LOSS": "⛔",
+    "TAKE_PROFIT": "🎯",
 }
 
 
@@ -48,6 +56,7 @@ class TelegramBot:
         self.enabled = bool(self.token and self.chat_id)
         self.message_queue = Queue()
         self.running = True
+        self._last_setup_message: Dict[str, datetime] = {}  # Track last setup message per symbol
 
         if self.enabled:
             self._start_worker()
@@ -128,6 +137,125 @@ class TelegramBot:
             self.queue_message(message)
         else:
             self._send_message_sync(message)
+
+    # ==================== DCA SETUP MESSAGES ====================
+
+    def send_dca_setup(self, symbol: str, setup_info: Dict[str, Any],
+                       current_price: float, force: bool = False) -> None:
+        """
+        Send DCA setup information to Telegram.
+        Includes all DCA configuration details.
+        """
+        if not self.enabled:
+            return
+
+        # Rate limit: Don't send same setup more than once per hour
+        if not force:
+            if symbol in self._last_setup_message:
+                time_since = (datetime.now() - self._last_setup_message[symbol]).total_seconds()
+                if time_since < 3600:  # 1 hour
+                    return
+
+        self._last_setup_message[symbol] = datetime.now()
+
+        separator = "=" * 30
+
+        # Price Settings
+        price_settings = setup_info.get('price_settings', {})
+        order_margins = setup_info.get('order_margins', {})
+        dca_levels = setup_info.get('dca_levels', {})
+        conditions = setup_info.get('conditions', {})
+        advanced = setup_info.get('advanced', {})
+        risk_mgmt = setup_info.get('risk_management', {})
+
+        message = (
+            f"{EMOJI['SETUP']} <b>FUTURES DCA SETUP</b> {EMOJI['SETUP']}\n"
+            f"{separator}\n\n"
+            f"<b>Symbol:</b> {symbol}\n"
+            f"<b>Current Price:</b> ${current_price:.2f}\n\n"
+
+            f"<b>{EMOJI['CONFIG']} Price Settings</b>\n"
+            f"• Price Drop Steps: {price_settings.get('price_drop_steps', 'N/A')}\n"
+            f"• Take Profit Per Round: {price_settings.get('take_profit_per_round', 'N/A')}\n"
+            f"• Investment: {price_settings.get('investment_leverage', 'N/A')}\n\n"
+
+            f"<b>{EMOJI['MARGIN']} Order Margins</b>\n"
+            f"• Base Order: {order_margins.get('base_order_margin', 'N/A')}\n"
+            f"• DCA Order: {order_margins.get('dca_order_margin', 'N/A')}\n"
+            f"• Max DCA Orders: {order_margins.get('max_dca_orders', 'N/A')}\n"
+            f"• Invested Margin: {order_margins.get('invested_margin', 'N/A')}\n"
+            f"• Auto-add Margin: {order_margins.get('auto_add_margin', 'N/A')}\n\n"
+
+            f"<b>{EMOJI['LEVEL']} DCA Order Details</b>\n"
+        )
+
+        # Add DCA levels
+        levels = dca_levels.get('levels', [])
+        for level in levels:
+            message += (
+                f"• Level {level.get('level', 'N/A')}: "
+                f"${level.get('price', 0):.2f} | "
+                f"{level.get('drop_from_entry', 'N/A')} | "
+                f"Margin: ${level.get('margin', 0):.2f} | "
+                f"Size: ${level.get('size', 0):.2f}\n"
+            )
+
+        message += (
+            f"\n<b>Total Margin Required:</b> ${dca_levels.get('total_margin_required', 0):.2f}\n\n"
+
+            f"<b>{EMOJI['TARGET']} Start Condition:</b> {conditions.get('start_condition', 'N/A')}\n"
+            f"<b>{EMOJI['STOP_LOSS']} Stop Condition:</b> {conditions.get('stop_condition', 'N/A')}\n"
+            f"<b>{EMOJI['STOP_LOSS']} Stop Loss:</b> {risk_mgmt.get('stop_loss', 'N/A')}\n\n"
+
+            f"<b>{EMOJI['CONFIG']} Advanced</b>\n"
+            f"• Price Deviation Multiplier: {advanced.get('price_deviation_multiplier', 'N/A')}\n"
+            f"• DCA Order Size Multiplier: {advanced.get('dca_order_size_multiplier', 'N/A')}\n\n"
+
+            f"<b>{EMOJI['RISK']} Risk Management</b>\n"
+            f"• Max Loss Per Trade: {risk_mgmt.get('max_loss_per_trade', 'N/A')}\n"
+            f"• Risk/Reward Ratio: {risk_mgmt.get('risk_reward_ratio', 'N/A')}\n"
+            f"• Total Margin Required: {risk_mgmt.get('total_margin_required', 'N/A')}\n\n"
+
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        self.queue_message(message)
+
+    def send_dca_setup_summary(self, setups: Dict[str, Dict[str, Any]]) -> None:
+        """
+        Send summary of all active DCA setups.
+        """
+        if not self.enabled or not setups:
+            return
+
+        separator = "=" * 30
+        message = (
+            f"{EMOJI['SETUP']} <b>ACTIVE DCA SETUPS</b> {EMOJI['SETUP']}\n"
+            f"{separator}\n\n"
+        )
+
+        for symbol, setup in setups.items():
+            status = setup.get('status', 'UNKNOWN')
+            entry_price = setup.get('entry_price', 0)
+            setup_info = setup.get('setup_info', {})
+
+            status_emoji = "🟢" if status == "ACTIVE_TRADE" else "🟡" if status == "ACTIVE" else "🔴"
+
+            message += (
+                f"<b>{symbol}</b> {status_emoji}\n"
+                f"• Status: {status}\n"
+                f"• Entry: ${entry_price:.2f}\n"
+                f"• Levels: {setup_info.get('max_dca_orders', 'N/A')}\n"
+                f"• Drop: {setup_info.get('price_drop_steps', 'N/A')}\n"
+                f"• TP: {setup_info.get('take_profit_per_round', 'N/A')}\n"
+                f"• Leverage: {setup_info.get('investment_leverage', 'N/A')}x\n"
+                f"• PnL: ${setup.get('pnl', 0):.2f}\n\n"
+            )
+
+        message += f"{EMOJI['CLOCK']} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.queue_message(message)
+
+    # ==================== TRADING MESSAGES ====================
 
     def send_dca_entry(self, symbol: str, entry_price: float, dca_level: int,
                        total_levels: int, stop_loss: float, position_size: float,
@@ -256,6 +384,68 @@ class TelegramBot:
             f"{EMOJI['TARGET']} <i>See you tomorrow!</i>"
         )
         self.queue_message(message)
+
+    # ==================== PERFORMANCE MESSAGES ====================
+
+    def send_performance_report(self, performance: Dict[str, Any]) -> None:
+        """
+        Send performance report to Telegram.
+        """
+        if not self.enabled:
+            return
+
+        separator = "=" * 30
+        pnl_emoji = EMOJI['PROFIT'] if performance.get('total_pnl', 0) > 0 else EMOJI['LOSS']
+
+        message = (
+            f"{pnl_emoji} <b>PERFORMANCE REPORT</b> {pnl_emoji}\n"
+            f"{separator}\n\n"
+            f"<b>Overall Performance:</b>\n"
+            f"• Total PnL: ${performance.get('total_pnl', 0):.2f}\n"
+            f"• Total Trades: {performance.get('total_trades', 0)}\n"
+            f"• Win Rate: {performance.get('win_rate', 0):.1f}%\n"
+            f"• Average PnL: ${performance.get('average_pnl', 0):.2f}\n\n"
+            f"<b>Trade Statistics:</b>\n"
+            f"• Winning Trades: {performance.get('winning_trades', 0)}\n"
+            f"• Losing Trades: {performance.get('losing_trades', 0)}\n"
+            f"• Best Trade: ${performance.get('best_trade', 0):.2f}\n"
+            f"• Worst Trade: ${performance.get('worst_trade', 0):.2f}\n\n"
+            f"<b>DCA Setups:</b>\n"
+            f"• Active: {performance.get('dca_setups_active', 0)}\n"
+            f"• Completed: {performance.get('dca_setups_completed', 0)}\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        self.queue_message(message)
+
+    # ==================== SIGNAL MESSAGES ====================
+
+    def send_signal_summary(self, signal_stats: Dict[str, Any]) -> None:
+        """
+        Send signal manager summary to Telegram.
+        """
+        if not self.enabled:
+            return
+
+        separator = "=" * 30
+
+        message = (
+            f"{EMOJI['SIGNAL']} <b>SIGNAL MANAGER SUMMARY</b> {EMOJI['SIGNAL']}\n"
+            f"{separator}\n\n"
+            f"<b>Signal Statistics:</b>\n"
+            f"• Total Signals: {signal_stats.get('total_signals', 0)}\n"
+            f"• Executed: {signal_stats.get('executed_signals', 0)}\n"
+            f"• Rejected: {signal_stats.get('rejected_signals', 0)}\n"
+            f"• Expired: {signal_stats.get('expired_signals', 0)}\n"
+            f"• Duplicates Prevented: {signal_stats.get('duplicate_signals_prevented', 0)}\n\n"
+            f"<b>Current Status:</b>\n"
+            f"• Active Signals: {signal_stats.get('active_signals', 0)}\n"
+            f"• Pending Signals: {signal_stats.get('pending_signals', 0)}\n"
+            f"• DCA Setups Active: {signal_stats.get('dca_setups_active', 0)}\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        self.queue_message(message)
+
+    # ==================== ERROR MESSAGES ====================
 
     def send_error(self, error: str, context: Optional[Dict] = None):
         """Send error notification."""
