@@ -74,9 +74,11 @@ class TelegramBot:
 
     def _send_startup_message(self):
         """Send startup notification."""
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {EMOJI['START']} <b>DCA Day Trading Bot</b>
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Status:</b> Online {EMOJI['HEALTH']}
 <b>Strategy:</b> Hybrid DCA + Super TDI
@@ -142,9 +144,11 @@ class TelegramBot:
         direction_emoji = EMOJI['BUY'] if direction == "LONG" else EMOJI['SELL']
         pos_size_usd = position_size * entry_price
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {direction_emoji} <b>DCA ENTRY</b> {direction_emoji}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Symbol:</b> {symbol}
 <b>Direction:</b> {direction}
@@ -174,18 +178,17 @@ class TelegramBot:
         pnl_emoji = EMOJI['PROFIT'] if pnl > 0 else EMOJI['LOSS']
         pnl_color = "🟢" if pnl > 0 else "🔴"
 
-        # Calculate average entry
-        avg_entry = entry_price
-
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {pnl_emoji} <b>DCA EXIT</b> {pnl_emoji}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Symbol:</b> {symbol}
 <b>Type:</b> {exit_type}
 <b>Reason:</b> {reason}
 
-<b>Avg Entry:</b> ${avg_entry:.4f}
+<b>Avg Entry:</b> ${entry_price:.4f}
 <b>Exit Price:</b> ${exit_price:.4f}
 <b>DCA Level:</b> {dca_level}/{total_levels}
 
@@ -201,9 +204,11 @@ class TelegramBot:
         if not self.enabled:
             return
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {EMOJI['START']} <b>DCA DAY TRADING STARTED</b> {EMOJI['START']}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Strategy:</b> Hybrid DCA + Super TDI
 <b>DCA Levels:</b> {strategy_config.get('dca_levels', 3)}
@@ -224,9 +229,11 @@ class TelegramBot:
         if not self.enabled:
             return
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {EMOJI['STOP']} <b>DCA DAY TRADING STOPPED</b> {EMOJI['STOP']}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Session Summary:</b>
 • Total PnL: ${stats.get('total_pnl', 0):.2f}
@@ -248,9 +255,11 @@ class TelegramBot:
 
         pnl_emoji = EMOJI['PROFIT'] if summary.get('total_pnl', 0) > 0 else EMOJI['LOSS']
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {pnl_emoji} <b>DCA DAILY SUMMARY</b> {pnl_emoji}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Date:</b> {datetime.now().strftime('%Y-%m-%d')}
 
@@ -274,9 +283,11 @@ class TelegramBot:
         if not self.enabled:
             return
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {EMOJI['WARNING']} <b>DCA ERROR</b> {EMOJI['WARNING']}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Error:</b> {error}
 <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}
@@ -300,9 +311,11 @@ class TelegramBot:
         }
         emoji = emoji_map.get(alert_type, EMOJI['INFO'])
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {emoji} <b>{title}</b> {emoji}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 {message_body}
 
@@ -317,9 +330,11 @@ class TelegramBot:
 
         health_emoji = EMOJI['HEALTH'] if status.get('status') == 'healthy' else EMOJI['WARNING']
 
+        # Fixed: Removed backslash in f-string
+        separator = "━" * 23
         message = f"""
 {health_emoji} <b>DCA HEALTH CHECK</b> {health_emoji}
-━━━━━━━━━━━━━━━━━━━━━
+{separator}
 
 <b>Status:</b> {status.get('status', 'unknown')}
 <b>Active Positions:</b> {status.get('active_positions', 0)}
