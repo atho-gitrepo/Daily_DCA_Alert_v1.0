@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Key Adjustments Summary
 
 Before deploying, ensure these environment variables are set:
@@ -749,3 +750,7 @@ groq_*.json
 ```
 
 These files provide everything needed for a complete GitHub repository with proper documentation, configuration, and deployment setup.
+=======
+# Daily_DCA_Alert_v1.0
+DCA Bot
+>>>>>>> cf8ef54c7295d726e6f6d40c995027d84ef60f97
