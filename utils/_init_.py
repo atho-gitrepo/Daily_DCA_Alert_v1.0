@@ -6,6 +6,7 @@ from .indicators import Indicators, calculate_heikin_ashi
 from .telegram_bot import telegram_bot, TelegramBot
 from .mongodb_client import mongodb_client, MongoDBClient
 from .signal_manager import signal_manager, SignalManager, SignalType, SignalPriority, SignalStatus, TradingSignal
+from .dca_setup_manager import dca_setup_manager, DCASetupManager, DCAOrderDetails
 
 __all__ = [
     "Indicators",
@@ -20,4 +21,7 @@ __all__ = [
     "SignalPriority",
     "SignalStatus",
     "TradingSignal",
+    "dca_setup_manager",
+    "DCASetupManager",
+    "DCAOrderDetails",
 ]
