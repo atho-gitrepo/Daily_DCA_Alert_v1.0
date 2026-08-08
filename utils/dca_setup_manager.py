@@ -1,590 +1,291 @@
 """
-Signal Manager for DCA Day Trading
-Manages trading signals with deduplication, expiration, and priority
-Version: 1.0.2 - Enhanced with DCA Setup tracking and performance metrics
+DCA Setup Manager for Futures Trading
+Manages DCA configuration and provides setup information
+Version: 1.0.0
 """
 
 import logging
-import uuid
-from typing import Dict, Optional, List, Any, Set
-from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
-from enum import Enum
-import threading
+from datetime import datetime
+import json
+
+from settings import config
 
 logger = logging.getLogger(__name__)
 
 
-class SignalType(Enum):
-    DCA_ENTRY = "DCA_ENTRY"
-    DCA_EXIT = "DCA_EXIT"
-    DCA_SETUP = "DCA_SETUP"  # NEW: For DCA setup signals
-    TAKE_PROFIT = "TAKE_PROFIT"
-    STOP_LOSS = "STOP_LOSS"
-    REBALANCE = "REBALANCE"
-    TRAILING_STOP = "TRAILING_STOP"  # NEW: For trailing stop signals
-
-
-class SignalPriority(Enum):
-    LOW = 1
-    NORMAL = 2
-    HIGH = 3
-    CRITICAL = 4
-
-
-class SignalStatus(Enum):
-    PENDING = "PENDING"
-    ACTIVE = "ACTIVE"
-    EXECUTED = "EXECUTED"
-    REJECTED = "REJECTED"
-    EXPIRED = "EXPIRED"
-    CANCELLED = "CANCELLED"
-    SETUP = "SETUP"  # NEW: For setup signals
-
-
 @dataclass
-class TradingSignal:
-    """Trading signal data structure."""
-    signal_id: str
-    symbol: str
-    signal_type: SignalType
-    direction: str  # LONG or SHORT
+class DCAOrderDetails:
+    """Individual DCA order details"""
+    order_number: int
     price: float
-    quantity: float
-    priority: SignalPriority
-    status: SignalStatus
-    created_at: datetime
-    expires_at: datetime
-    executed_at: Optional[datetime] = None
-    execution_price: Optional[float] = None
-    dca_level: int = 1
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
-    confidence: float = 0.5
-    reason: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
-    # NEW: Performance tracking fields
-    pnl: Optional[float] = None
-    pnl_percent: Optional[float] = None
-    setup_info: Optional[Dict[str, Any]] = None  # NEW: For DCA setup info
-    execution_time_ms: Optional[float] = None  # NEW: Execution time in milliseconds
+    size: float
+    margin: float
+    status: str = "PENDING"  # PENDING, FILLED, CANCELLED
+    filled_time: Optional[datetime] = None
 
 
-class SignalManager:
+class DCASetupManager:
     """
-    Manages trading signals with deduplication, expiration, and priority.
-    Enhanced with DCA setup tracking and performance metrics.
+    Manages DCA setup configuration and provides order details.
     """
-
+    
     def __init__(self):
-        self.active_signals: Dict[str, TradingSignal] = {}
-        self.pending_signals: Dict[str, TradingSignal] = {}
-        self.executed_signals: Dict[str, TradingSignal] = {}
-        self.rejected_signals: Dict[str, TradingSignal] = {}
-        self.expired_signals: Dict[str, TradingSignal] = {}
-        self.setup_signals: Dict[str, TradingSignal] = {}  # NEW: For setup signals
-
-        # Track signals by symbol
-        self._symbol_signals: Dict[str, Set[str]] = {}
-
-        # NEW: Track DCA setups by symbol
-        self._dca_setups: Dict[str, Dict[str, Any]] = {}
-
-        # Lock for thread safety
-        self._lock = threading.Lock()
-
-        # Statistics
-        self.stats = {
-            "total_signals": 0,
-            "executed_signals": 0,
-            "rejected_signals": 0,
-            "expired_signals": 0,
-            "duplicate_signals_prevented": 0,
-            # NEW: Performance stats
-            "total_pnl": 0.0,
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "win_rate": 0.0,
-            "average_pnl": 0.0,
-            "best_trade": 0.0,
-            "worst_trade": 0.0,
-            "total_trades": 0,
-            # NEW: DCA setup stats
-            "dca_setups_created": 0,
-            "dca_setups_active": 0,
-            "dca_setups_completed": 0,
+        self.setup = config.dca_setup
+        self.active_setups: Dict[str, Dict] = {}
+        self.order_history: List[Dict] = []
+        
+        logger.info("DCA Setup Manager initialized")
+    
+    def get_setup_info(self, symbol: str, current_price: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Get complete DCA setup information for a symbol.
+        """
+        # Calculate DCA levels
+        levels = self._calculate_dca_levels(symbol, current_price)
+        
+        # Calculate order details
+        order_details = self._get_order_details(symbol, current_price)
+        
+        return {
+            "symbol": symbol,
+            "timestamp": datetime.now().isoformat(),
+            "current_price": current_price or 0,
+            "price_settings": self._get_price_settings(),
+            "order_margins": self._get_order_margins(),
+            "dca_levels": levels,
+            "order_details": order_details,
+            "conditions": self._get_conditions(),
+            "advanced": self._get_advanced_settings(),
+            "risk_management": self._get_risk_management(),
         }
-
-        logger.info("SignalManager initialized (v1.0.2)")
-
-    def create_signal(self, symbol: str, signal_type: SignalType,
-                      direction: str, price: float, quantity: float,
-                      priority: SignalPriority = SignalPriority.NORMAL,
-                      dca_level: int = 1, stop_loss: Optional[float] = None,
-                      confidence: float = 0.5, reason: str = "",
-                      metadata: Optional[Dict] = None,
-                      expires_in_seconds: int = 120,
-                      setup_info: Optional[Dict] = None) -> Optional[TradingSignal]:
+    
+    def _calculate_dca_levels(self, symbol: str, current_price: Optional[float] = None) -> Dict[str, Any]:
+        """Calculate DCA price levels."""
+        if not current_price:
+            return {}
+        
+        levels = []
+        price_drop = self.setup.price_drop_steps
+        
+        for i in range(self.setup.max_dca_orders):
+            level_num = i + 1
+            if i == 0:
+                price = current_price
+                drop_pct = 0
+            else:
+                price = current_price * (1 - (price_drop * i))
+                drop_pct = price_drop * i * 100
+            
+            levels.append({
+                "level": level_num,
+                "price": round(price, 2),
+                "drop_from_entry": f"{drop_pct:.1f}%",
+                "margin": self._get_level_margin(level_num),
+                "size": self._get_level_size(level_num),
+            })
+        
+        return {
+            "current_price": current_price,
+            "levels": levels,
+            "max_levels": self.setup.max_dca_orders,
+            "total_margin_required": sum([l["margin"] for l in levels]),
+        }
+    
+    def _get_order_details(self, symbol: str, current_price: Optional[float] = None) -> List[Dict]:
+        """Get detailed order information for each DCA level."""
+        if not current_price:
+            return []
+        
+        orders = []
+        price_drop = self.setup.price_drop_steps
+        
+        for i in range(self.setup.max_dca_orders):
+            level_num = i + 1
+            if i == 0:
+                price = current_price
+            else:
+                price = current_price * (1 - (price_drop * i))
+            
+            margin = self._get_level_margin(level_num)
+            size = margin * self.setup.investment_leverage
+            
+            orders.append({
+                "order_number": level_num,
+                "price": round(price, 2),
+                "size": round(size, 2),
+                "margin": round(margin, 2),
+                "status": "PENDING"
+            })
+        
+        return orders
+    
+    def _get_price_settings(self) -> Dict[str, Any]:
+        """Get price-related settings."""
+        return {
+            "price_drop_steps": f"{self.setup.price_drop_steps * 100:.1f}%",
+            "take_profit_per_round": f"{self.setup.take_profit_per_round * 100:.1f}%",
+            "investment_leverage": f"{self.setup.investment_leverage}x",
+        }
+    
+    def _get_order_margins(self) -> Dict[str, Any]:
+        """Get order margin settings."""
+        return {
+            "base_order_margin": f"${self.setup.base_order_margin:.2f}",
+            "dca_order_margin": f"${self.setup.dca_order_margin:.2f}",
+            "max_dca_orders": self.setup.max_dca_orders,
+            "invested_margin": f"${self.setup.invested_margin:.2f}",
+            "auto_add_margin": "Enabled" if self.setup.auto_add_margin else "Disabled",
+        }
+    
+    def _get_advanced_settings(self) -> Dict[str, Any]:
+        """Get advanced settings."""
+        return {
+            "price_deviation_multiplier": self.setup.price_deviation_multiplier,
+            "dca_order_size_multiplier": self.setup.dca_order_size_multiplier,
+        }
+    
+    def _get_conditions(self) -> Dict[str, Any]:
+        """Get start and stop conditions."""
+        return {
+            "start_condition": self.setup.start_condition,
+            "stop_condition": self.setup.stop_condition,
+        }
+    
+    def _get_risk_management(self) -> Dict[str, Any]:
+        """Get risk management settings."""
+        total_margin = self.setup.base_order_margin + (self.setup.dca_order_margin * self.setup.max_dca_orders)
+        max_loss = total_margin * self.setup.stop_loss_percent
+        risk = self.setup.stop_loss_percent
+        reward = self.setup.take_profit_per_round
+        risk_reward = round(reward / risk, 2) if risk > 0 else 0
+        
+        return {
+            "stop_loss": f"{self.setup.stop_loss_percent * 100:.1f}%",
+            "max_loss_per_trade": f"${max_loss:.2f}",
+            "risk_reward_ratio": risk_reward,
+            "total_margin_required": f"${total_margin:.2f}",
+        }
+    
+    def _get_level_margin(self, level: int) -> float:
+        """Get margin for a specific DCA level."""
+        if level == 1:
+            return self.setup.base_order_margin
+        else:
+            multiplier = self.setup.dca_order_size_multiplier ** (level - 1)
+            return self.setup.dca_order_margin * multiplier
+    
+    def _get_level_size(self, level: int) -> float:
+        """Get position size for a specific DCA level."""
+        margin = self._get_level_margin(level)
+        return margin * self.setup.investment_leverage
+    
+    def format_setup_message(self, symbol: str, current_price: float) -> str:
         """
-        Create a new trading signal with deduplication.
-        Enhanced with DCA setup support.
+        Format DCA setup information as a Telegram message.
         """
-        with self._lock:
-            # Special handling for DCA_SETUP signals
-            if signal_type == SignalType.DCA_SETUP:
-                return self._create_setup_signal(symbol, price, quantity, setup_info, metadata)
+        info = self.get_setup_info(symbol, current_price)
+        if not info:
+            return "❌ Unable to get DCA setup information"
+        
+        message = f"""
+📊 <b>FUTURES DCA SETUP</b>
+━━━━━━━━━━━━━━━━━━━━━
 
-            # Check for duplicate signals - STRONGER DEDUPLICATION
-            if self._is_duplicate(symbol, signal_type, direction, dca_level):
-                self.stats["duplicate_signals_prevented"] += 1
-                logger.warning(f"Duplicate signal prevented for {symbol} {signal_type.value} Level {dca_level}")
-                return None
+<b>Symbol:</b> {symbol}
+<b>Current Price:</b> ${current_price:.2f}
 
-            # Check if there's already an active signal for this symbol and level
-            for sig in self.active_signals.values():
-                if (sig.symbol == symbol and
-                    sig.signal_type == signal_type and
-                    sig.dca_level == dca_level and
-                    sig.status in [SignalStatus.PENDING, SignalStatus.ACTIVE]):
-                    self.stats["duplicate_signals_prevented"] += 1
-                    logger.warning(f"Active signal already exists for {symbol} Level {dca_level}")
-                    return None
+<b>💰 Price Settings</b>
+• Price Drop Steps: {info['price_settings']['price_drop_steps']}
+• Take Profit Per Round: {info['price_settings']['take_profit_per_round']}
+• Investment: {info['price_settings']['investment_leverage']}
 
-            # Check if there's already a pending signal for this symbol and level
-            for sig in self.pending_signals.values():
-                if (sig.symbol == symbol and
-                    sig.signal_type == signal_type and
-                    sig.dca_level == dca_level):
-                    self.stats["duplicate_signals_prevented"] += 1
-                    logger.warning(f"Pending signal already exists for {symbol} Level {dca_level}")
-                    return None
+<b>💵 Order Margins</b>
+• Base Order: {info['order_margins']['base_order_margin']}
+• DCA Order: {info['order_margins']['dca_order_margin']}
+• Max DCA Orders: {info['order_margins']['max_dca_orders']}
+• Invested Margin: {info['order_margins']['invested_margin']}
+• Auto-add Margin: {info['order_margins']['auto_add_margin']}
 
-            # Generate unique ID
-            signal_id = f"{symbol}_{signal_type.value}_{uuid.uuid4().hex[:8]}"
+<b>📋 DCA Order Details</b>
+"""
+        
+        # Add DCA levels
+        levels = info.get('dca_levels', {}).get('levels', [])
+        for level in levels:
+            message += f"""
+• Level {level['level']}: ${level['price']:.2f} | {level['drop_from_entry']} | Margin: ${level['margin']:.2f} | Size: ${level['size']:.2f}
+"""
+        
+        message += f"""
+<b>🎯 Start Condition:</b> {info['conditions']['start_condition']}
+<b>🛑 Stop Condition:</b> {info['conditions']['stop_condition']}
+<b>⛔ Stop Loss:</b> {info['risk_management']['stop_loss']}
 
-            # Calculate expiration
-            created_at = datetime.now()
-            expires_at = created_at + timedelta(seconds=expires_in_seconds)
+<b>📊 Advanced</b>
+• Price Deviation Multiplier: {info['advanced']['price_deviation_multiplier']}
+• DCA Order Size Multiplier: {info['advanced']['dca_order_size_multiplier']}
 
-            # Create signal
-            signal = TradingSignal(
-                signal_id=signal_id,
-                symbol=symbol,
-                signal_type=signal_type,
-                direction=direction,
-                price=price,
-                quantity=quantity,
-                priority=priority,
-                status=SignalStatus.PENDING,
-                created_at=created_at,
-                expires_at=expires_at,
-                dca_level=dca_level,
-                stop_loss=stop_loss,
-                confidence=confidence,
-                reason=reason,
-                metadata=metadata or {},
-                setup_info=setup_info
-            )
+<b>📈 Risk Management</b>
+• Max Loss Per Trade: {info['risk_management']['max_loss_per_trade']}
+• Risk/Reward Ratio: {info['risk_management']['risk_reward_ratio']}
+• Total Margin Required: {info['risk_management']['total_margin_required']}
 
-            # Store signal
-            self.pending_signals[signal_id] = signal
-            self.stats["total_signals"] += 1
-
-            # Track by symbol
-            if symbol not in self._symbol_signals:
-                self._symbol_signals[symbol] = set()
-            self._symbol_signals[symbol].add(signal_id)
-
-            logger.debug(f"Signal created: {signal_id} for {symbol} Level {dca_level}")
-            return signal
-
-    def _create_setup_signal(self, symbol: str, price: float, quantity: float,
-                             setup_info: Optional[Dict], metadata: Optional[Dict]) -> Optional[TradingSignal]:
-        """Create a DCA setup signal."""
-        signal_id = f"{symbol}_DCA_SETUP_{uuid.uuid4().hex[:8]}"
-        created_at = datetime.now()
-        expires_at = created_at + timedelta(hours=24)  # Setup signals last 24 hours
-
-        signal = TradingSignal(
-            signal_id=signal_id,
-            symbol=symbol,
-            signal_type=SignalType.DCA_SETUP,
-            direction="NEUTRAL",
-            price=price,
-            quantity=quantity,
-            priority=SignalPriority.NORMAL,
-            status=SignalStatus.SETUP,
-            created_at=created_at,
-            expires_at=expires_at,
-            dca_level=0,
-            confidence=1.0,
-            reason="DCA Setup Created",
-            metadata=metadata or {},
-            setup_info=setup_info or {}
-        )
-
-        self.setup_signals[signal_id] = signal
-        self.stats["dca_setups_created"] += 1
-        self.stats["dca_setups_active"] += 1
-
-        # Store setup info
-        self._dca_setups[symbol] = {
-            "signal_id": signal_id,
-            "price": price,
-            "quantity": quantity,
-            "created_at": created_at,
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        
+        return message
+    
+    def get_active_setups(self) -> Dict[str, Dict]:
+        """Get all active DCA setups."""
+        return self.active_setups.copy()
+    
+    def add_setup(self, symbol: str, setup_info: Dict) -> None:
+        """Add a new DCA setup."""
+        self.active_setups[symbol] = {
+            "symbol": symbol,
             "setup_info": setup_info,
+            "created_at": datetime.now(),
             "status": "ACTIVE"
         }
-
-        logger.info(f"DCA Setup created: {signal_id} for {symbol}")
-        return signal
-
-    def _is_duplicate(self, symbol: str, signal_type: SignalType,
-                      direction: str, dca_level: int) -> bool:
-        """Check if a similar signal already exists."""
-        if symbol not in self._symbol_signals:
-            return False
-
-        for signal_id in self._symbol_signals[symbol]:
-            if signal_id in self.pending_signals:
-                signal = self.pending_signals[signal_id]
-                if (signal.signal_type == signal_type and
-                    signal.direction == direction and
-                    signal.dca_level == dca_level and
-                    signal.status in [SignalStatus.PENDING, SignalStatus.ACTIVE]):
-                    return True
-
-        return False
-
-    def activate_signal(self, signal_id: str) -> bool:
-        """Activate a pending signal."""
-        with self._lock:
-            if signal_id not in self.pending_signals:
-                logger.warning(f"Signal {signal_id} not found in pending")
-                return False
-
-            signal = self.pending_signals[signal_id]
-
-            # Check if expired
-            if datetime.now() > signal.expires_at:
-                self._expire_signal(signal_id)
-                return False
-
-            # Activate
-            signal.status = SignalStatus.ACTIVE
-            self.active_signals[signal_id] = signal
-            del self.pending_signals[signal_id]
-
-            logger.info(f"Signal activated: {signal_id} for {signal.symbol}")
-            return True
-
-    def execute_signal(self, signal_id: str, execution_price: float,
-                       pnl: Optional[float] = None,
-                       pnl_percent: Optional[float] = None) -> bool:
-        """
-        Execute an active signal.
-        Enhanced with PnL tracking.
-        """
-        with self._lock:
-            # Check active signals first
-            if signal_id in self.active_signals:
-                signal = self.active_signals[signal_id]
-                del self.active_signals[signal_id]
-            elif signal_id in self.pending_signals:
-                signal = self.pending_signals[signal_id]
-                del self.pending_signals[signal_id]
-            else:
-                logger.warning(f"Signal {signal_id} not found in active or pending")
-                return False
-
-            signal.status = SignalStatus.EXECUTED
-            signal.executed_at = datetime.now()
-            signal.execution_price = execution_price
-
-            # Track PnL
-            if pnl is not None:
-                signal.pnl = pnl
-                signal.pnl_percent = pnl_percent
-                self._update_pnl_stats(pnl)
-
-            # Calculate execution time
-            if signal.created_at:
-                signal.execution_time_ms = (signal.executed_at - signal.created_at).total_seconds() * 1000
-
-            self.executed_signals[signal_id] = signal
-            self.stats["executed_signals"] += 1
-
-            # Update DCA setup status if it's a DCA entry
-            if signal.signal_type == SignalType.DCA_ENTRY and signal.symbol in self._dca_setups:
-                self._dca_setups[signal.symbol]["status"] = "ACTIVE_TRADE"
-                self._dca_setups[signal.symbol]["entry_price"] = execution_price
-                self._dca_setups[signal.symbol]["entry_time"] = signal.executed_at
-
-            logger.info(f"Signal executed: {signal_id} at ${execution_price:.4f}" +
-                       (f" | PnL: ${pnl:.2f}" if pnl is not None else ""))
-            return True
-
-    def _update_pnl_stats(self, pnl: float):
-        """Update PnL statistics."""
-        self.stats["total_pnl"] += pnl
-        self.stats["total_trades"] += 1
-
-        if pnl > 0:
-            self.stats["winning_trades"] += 1
-            if pnl > self.stats["best_trade"]:
-                self.stats["best_trade"] = pnl
-        else:
-            self.stats["losing_trades"] += 1
-            if pnl < self.stats["worst_trade"]:
-                self.stats["worst_trade"] = pnl
-
-        self.stats["win_rate"] = (self.stats["winning_trades"] / self.stats["total_trades"]) * 100 if self.stats["total_trades"] > 0 else 0
-        self.stats["average_pnl"] = self.stats["total_pnl"] / self.stats["total_trades"] if self.stats["total_trades"] > 0 else 0
-
-    def reject_signal(self, signal_id: str, reason: str = "") -> bool:
-        """Reject a signal."""
-        with self._lock:
-            if signal_id in self.pending_signals:
-                signal = self.pending_signals[signal_id]
-                del self.pending_signals[signal_id]
-            elif signal_id in self.active_signals:
-                signal = self.active_signals[signal_id]
-                del self.active_signals[signal_id]
-            else:
-                logger.warning(f"Signal {signal_id} not found")
-                return False
-
-            signal.status = SignalStatus.REJECTED
-            signal.error = reason
-            self.rejected_signals[signal_id] = signal
-            self.stats["rejected_signals"] += 1
-
-            logger.info(f"Signal rejected: {signal_id} - {reason}")
-            return True
-
-    def _expire_signal(self, signal_id: str):
-        """Expire a signal."""
-        if signal_id in self.pending_signals:
-            signal = self.pending_signals[signal_id]
-            del self.pending_signals[signal_id]
-        elif signal_id in self.active_signals:
-            signal = self.active_signals[signal_id]
-            del self.active_signals[signal_id]
-        elif signal_id in self.setup_signals:
-            signal = self.setup_signals[signal_id]
-            del self.setup_signals[signal_id]
-            if signal.symbol in self._dca_setups:
-                self._dca_setups[signal.symbol]["status"] = "EXPIRED"
-            return
-        else:
-            return
-
-        signal.status = SignalStatus.EXPIRED
-        self.expired_signals[signal_id] = signal
-        self.stats["expired_signals"] += 1
-        logger.debug(f"Signal expired: {signal_id}")
-
-    def check_expired_signals(self):
-        """Check and expire any expired signals."""
-        now = datetime.now()
-        expired_ids = []
-
-        # Check pending signals
-        for signal_id, signal in self.pending_signals.items():
-            if now > signal.expires_at:
-                expired_ids.append(signal_id)
-
-        # Check active signals
-        for signal_id, signal in self.active_signals.items():
-            if now > signal.expires_at:
-                expired_ids.append(signal_id)
-
-        # Check setup signals
-        for signal_id, signal in self.setup_signals.items():
-            if now > signal.expires_at:
-                expired_ids.append(signal_id)
-
-        for signal_id in expired_ids:
-            self._expire_signal(signal_id)
-
-        if expired_ids:
-            logger.debug(f"Expired {len(expired_ids)} signals")
-
-    def get_signal(self, signal_id: str) -> Optional[TradingSignal]:
-        """Get a signal by ID."""
-        for collection in [self.pending_signals, self.active_signals,
-                          self.executed_signals, self.rejected_signals,
-                          self.expired_signals, self.setup_signals]:
-            if signal_id in collection:
-                return collection[signal_id]
-        return None
-
-    def get_pending_signals(self, symbol: Optional[str] = None) -> List[TradingSignal]:
-        """Get pending signals."""
-        if symbol:
-            return [s for s in self.pending_signals.values() if s.symbol == symbol]
-        return list(self.pending_signals.values())
-
-    def get_active_signals(self, symbol: Optional[str] = None) -> List[TradingSignal]:
-        """Get active signals."""
-        if symbol:
-            return [s for s in self.active_signals.values() if s.symbol == symbol]
-        return list(self.active_signals.values())
-
-    def get_all_active_signals(self) -> Dict[str, TradingSignal]:
-        """Get all active signals as dict."""
-        return self.active_signals.copy()
-
-    def get_setup_signals(self, symbol: Optional[str] = None) -> List[TradingSignal]:
-        """Get DCA setup signals."""
-        if symbol:
-            return [s for s in self.setup_signals.values() if s.symbol == symbol]
-        return list(self.setup_signals.values())
-
-    def get_dca_setup(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get DCA setup information for a symbol."""
-        return self._dca_setups.get(symbol)
-
-    def get_all_dca_setups(self) -> Dict[str, Dict[str, Any]]:
-        """Get all DCA setups."""
-        return self._dca_setups.copy()
-
-    def update_dca_setup_status(self, symbol: str, status: str,
-                                 exit_price: Optional[float] = None,
-                                 pnl: Optional[float] = None) -> bool:
+        logger.info(f"DCA setup added for {symbol}")
+    
+    def update_setup_status(self, symbol: str, status: str) -> bool:
         """Update DCA setup status."""
-        with self._lock:
-            if symbol not in self._dca_setups:
-                return False
-
-            self._dca_setups[symbol]["status"] = status
-            if exit_price is not None:
-                self._dca_setups[symbol]["exit_price"] = exit_price
-                self._dca_setups[symbol]["exit_time"] = datetime.now()
-            if pnl is not None:
-                self._dca_setups[symbol]["pnl"] = pnl
-
-            if status in ["CLOSED", "COMPLETED", "STOPPED"]:
-                self.stats["dca_setups_completed"] += 1
-                self.stats["dca_setups_active"] -= 1
-
-            logger.info(f"DCA Setup {symbol} status updated: {status}")
+        if symbol in self.active_setups:
+            self.active_setups[symbol]["status"] = status
+            self.active_setups[symbol]["updated_at"] = datetime.now()
+            logger.info(f"DCA setup status updated for {symbol}: {status}")
             return True
-
-    def get_recent_signals(self, symbol: str, seconds: int = 60) -> List[TradingSignal]:
-        """Get recent signals for a symbol."""
-        cutoff = datetime.now() - timedelta(seconds=seconds)
-        recent = []
-
-        for signal in list(self.pending_signals.values()) + list(self.active_signals.values()):
-            if signal.symbol == symbol and signal.created_at > cutoff:
-                recent.append(signal)
-
-        return recent
-
-    def get_active_count(self) -> int:
-        """Get number of active signals."""
-        return len(self.active_signals)
-
-    def get_pending_count(self) -> int:
-        """Get number of pending signals."""
-        return len(self.pending_signals)
-
-    def is_symbol_locked(self, symbol: str) -> bool:
-        """Check if a symbol has active signals."""
-        if symbol not in self._symbol_signals:
-            return False
-
-        for signal_id in self._symbol_signals[symbol]:
-            if signal_id in self.active_signals:
-                return True
         return False
-
-    def remove_signal(self, symbol: str) -> bool:
-        """Remove all signals for a symbol."""
-        with self._lock:
-            removed = 0
-            if symbol in self._symbol_signals:
-                for signal_id in list(self._symbol_signals[symbol]):
-                    if signal_id in self.pending_signals:
-                        del self.pending_signals[signal_id]
-                        removed += 1
-                    elif signal_id in self.active_signals:
-                        del self.active_signals[signal_id]
-                        removed += 1
-                    elif signal_id in self.setup_signals:
-                        del self.setup_signals[signal_id]
-                        removed += 1
-                del self._symbol_signals[symbol]
-
-            # Also remove DCA setup
-            if symbol in self._dca_setups:
-                del self._dca_setups[symbol]
-
-            if removed > 0:
-                logger.debug(f"Removed {removed} signals for {symbol}")
-                return True
-            return False
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get signal manager statistics."""
-        return {
-            **self.stats,
-            "active_signals": len(self.active_signals),
-            "pending_signals": len(self.pending_signals),
-            "executed_signals": len(self.executed_signals),
-            "rejected_signals": len(self.rejected_signals),
-            "expired_signals": len(self.expired_signals),
-            "setup_signals": len(self.setup_signals),
-            "total_signals": self.stats["total_signals"],
-            "dca_setups_active": len(self._dca_setups),
-        }
-
-    def get_performance_summary(self) -> Dict[str, Any]:
-        """Get performance summary."""
-        return {
-            "total_pnl": self.stats["total_pnl"],
-            "total_trades": self.stats["total_trades"],
-            "winning_trades": self.stats["winning_trades"],
-            "losing_trades": self.stats["losing_trades"],
-            "win_rate": self.stats["win_rate"],
-            "average_pnl": self.stats["average_pnl"],
-            "best_trade": self.stats["best_trade"],
-            "worst_trade": self.stats["worst_trade"],
-            "dca_setups_active": self.stats["dca_setups_active"],
-            "dca_setups_completed": self.stats["dca_setups_completed"],
-        }
-
-    def clear_expired(self):
-        """Clear expired signals from memory."""
-        with self._lock:
-            self.expired_signals.clear()
-            logger.debug("Cleared expired signals")
-
-    def clear_all(self):
-        """Clear all signals (use with caution)."""
-        with self._lock:
-            self.pending_signals.clear()
-            self.active_signals.clear()
-            self.executed_signals.clear()
-            self.rejected_signals.clear()
-            self.expired_signals.clear()
-            self.setup_signals.clear()
-            self._symbol_signals.clear()
-            self._dca_setups.clear()
-            logger.warning("All signals cleared")
+    
+    def get_setup(self, symbol: str) -> Optional[Dict]:
+        """Get DCA setup for a symbol."""
+        return self.active_setups.get(symbol)
+    
+    def remove_setup(self, symbol: str) -> bool:
+        """Remove a DCA setup."""
+        if symbol in self.active_setups:
+            del self.active_setups[symbol]
+            logger.info(f"DCA setup removed for {symbol}")
+            return True
+        return False
+    
+    def get_all_dca_setups(self) -> Dict[str, Dict]:
+        """Get all DCA setups (alias for get_active_setups)."""
+        return self.get_active_setups()
 
 
-# Singleton instance
-signal_manager = SignalManager()
+# ============================================================
+# CRITICAL: The singleton instance MUST be created here
+# This is what main.py imports
+# ============================================================
+dca_setup_manager = DCASetupManager()
 
+# Export everything
 __all__ = [
-    "signal_manager",
-    "SignalManager",
-    "SignalType",
-    "SignalPriority",
-    "SignalStatus",
-    "TradingSignal",
+    "dca_setup_manager",
+    "DCASetupManager",
+    "DCAOrderDetails",
 ]
