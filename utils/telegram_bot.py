@@ -6,7 +6,6 @@ Version: 1.0.0
 
 import logging
 import requests
-import asyncio
 import threading
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -74,23 +73,20 @@ class TelegramBot:
 
     def _send_startup_message(self):
         """Send startup notification."""
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{EMOJI['START']} <b>DCA Day Trading Bot</b>
-{separator}
-
-<b>Status:</b> Online {EMOJI['HEALTH']}
-<b>Strategy:</b> Hybrid DCA + Super TDI
-<b>DCA Levels:</b> {config.dca.dca_levels}
-<b>Position Size:</b> ${config.dca.position_size_usd}
-<b>Stop Loss:</b> {config.dca.stop_loss_percent*100:.1f}%
-<b>Exit Time:</b> {config.dca.exit_hour:02d}:{config.dca.exit_minute:02d} UTC
-
-<b>Monitoring:</b>
-{', '.join(config.market.symbols[:5])}
-{EMOJI['TELEGRAM']} <i>Ready for action!</i>
-"""
+        separator = "=" * 30
+        message = (
+            f"{EMOJI['START']} <b>DCA Day Trading Bot</b>\n"
+            f"{separator}\n\n"
+            f"<b>Status:</b> Online {EMOJI['HEALTH']}\n"
+            f"<b>Strategy:</b> Hybrid DCA + Super TDI\n"
+            f"<b>DCA Levels:</b> {config.dca.dca_levels}\n"
+            f"<b>Position Size:</b> ${config.dca.position_size_usd}\n"
+            f"<b>Stop Loss:</b> {config.dca.stop_loss_percent*100:.1f}%\n"
+            f"<b>Exit Time:</b> {config.dca.exit_hour:02d}:{config.dca.exit_minute:02d} UTC\n\n"
+            f"<b>Monitoring:</b>\n"
+            f"{', '.join(config.market.symbols[:5])}\n"
+            f"{EMOJI['TELEGRAM']} <i>Ready for action!</i>"
+        )
         self.queue_message(message)
 
     def _send_message_sync(self, message: str):
@@ -143,28 +139,23 @@ class TelegramBot:
 
         direction_emoji = EMOJI['BUY'] if direction == "LONG" else EMOJI['SELL']
         pos_size_usd = position_size * entry_price
+        separator = "=" * 30
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{direction_emoji} <b>DCA ENTRY</b> {direction_emoji}
-{separator}
-
-<b>Symbol:</b> {symbol}
-<b>Direction:</b> {direction}
-<b>Level:</b> {dca_level}/{total_levels}
-<b>Entry Price:</b> ${entry_price:.4f}
-<b>Position Size:</b> ${pos_size_usd:.2f}
-
-<b>Current Price:</b> ${current_price:.4f}
-<b>Stop Loss:</b> ${stop_loss:.4f}
-<b>Distance:</b> {abs(entry_price - stop_loss) / entry_price * 100:.2f}%
-
-<b>Confidence:</b> {direction_confidence*100:.0f}%
-<b>Reason:</b> {direction_reason}
-
-{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}
-"""
+        message = (
+            f"{direction_emoji} <b>DCA ENTRY</b> {direction_emoji}\n"
+            f"{separator}\n\n"
+            f"<b>Symbol:</b> {symbol}\n"
+            f"<b>Direction:</b> {direction}\n"
+            f"<b>Level:</b> {dca_level}/{total_levels}\n"
+            f"<b>Entry Price:</b> ${entry_price:.4f}\n"
+            f"<b>Position Size:</b> ${pos_size_usd:.2f}\n\n"
+            f"<b>Current Price:</b> ${current_price:.4f}\n"
+            f"<b>Stop Loss:</b> ${stop_loss:.4f}\n"
+            f"<b>Distance:</b> {abs(entry_price - stop_loss) / entry_price * 100:.2f}%\n\n"
+            f"<b>Confidence:</b> {direction_confidence*100:.0f}%\n"
+            f"<b>Reason:</b> {direction_reason}\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}"
+        )
         self.queue_message(message)
 
     def send_dca_exit(self, symbol: str, entry_price: float, exit_price: float,
@@ -177,26 +168,21 @@ class TelegramBot:
 
         pnl_emoji = EMOJI['PROFIT'] if pnl > 0 else EMOJI['LOSS']
         pnl_color = "🟢" if pnl > 0 else "🔴"
+        separator = "=" * 30
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{pnl_emoji} <b>DCA EXIT</b> {pnl_emoji}
-{separator}
-
-<b>Symbol:</b> {symbol}
-<b>Type:</b> {exit_type}
-<b>Reason:</b> {reason}
-
-<b>Avg Entry:</b> ${entry_price:.4f}
-<b>Exit Price:</b> ${exit_price:.4f}
-<b>DCA Level:</b> {dca_level}/{total_levels}
-
-<b>PnL:</b> {pnl_color} ${pnl:.2f} ({pnl_percent:+.2f}%)
-<b>Quantity:</b> {quantity:.4f}
-
-{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}
-"""
+        message = (
+            f"{pnl_emoji} <b>DCA EXIT</b> {pnl_emoji}\n"
+            f"{separator}\n\n"
+            f"<b>Symbol:</b> {symbol}\n"
+            f"<b>Type:</b> {exit_type}\n"
+            f"<b>Reason:</b> {reason}\n\n"
+            f"<b>Avg Entry:</b> ${entry_price:.4f}\n"
+            f"<b>Exit Price:</b> ${exit_price:.4f}\n"
+            f"<b>DCA Level:</b> {dca_level}/{total_levels}\n\n"
+            f"<b>PnL:</b> {pnl_color} ${pnl:.2f} ({pnl_percent:+.2f}%)\n"
+            f"<b>Quantity:</b> {quantity:.4f}\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}"
+        )
         self.queue_message(message)
 
     def send_dca_start(self, symbols: List[str], strategy_config: Dict):
@@ -204,24 +190,23 @@ class TelegramBot:
         if not self.enabled:
             return
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{EMOJI['START']} <b>DCA DAY TRADING STARTED</b> {EMOJI['START']}
-{separator}
+        separator = "=" * 30
+        symbols_text = ", ".join(symbols[:8])
+        if len(symbols) > 8:
+            symbols_text += f"\n+{len(symbols)-8} more"
 
-<b>Strategy:</b> Hybrid DCA + Super TDI
-<b>DCA Levels:</b> {strategy_config.get('dca_levels', 3)}
-<b>Position Size:</b> ${strategy_config.get('position_size', 50)}
-<b>Stop Loss:</b> {strategy_config.get('stop_loss', 1.0)}%
-<b>Exit Time:</b> {strategy_config.get('exit_time', '21:00')}
-
-<b>Monitoring:</b>
-{', '.join(symbols[:8])}
-{'' if len(symbols) <= 8 else f'\n+{len(symbols)-8} more'}
-
-{EMOJI['TELEGRAM']} <i>Bot is now active</i>
-"""
+        message = (
+            f"{EMOJI['START']} <b>DCA DAY TRADING STARTED</b> {EMOJI['START']}\n"
+            f"{separator}\n\n"
+            f"<b>Strategy:</b> Hybrid DCA + Super TDI\n"
+            f"<b>DCA Levels:</b> {strategy_config.get('dca_levels', 3)}\n"
+            f"<b>Position Size:</b> ${strategy_config.get('position_size', 50)}\n"
+            f"<b>Stop Loss:</b> {strategy_config.get('stop_loss', 1.0)}%\n"
+            f"<b>Exit Time:</b> {strategy_config.get('exit_time', '21:00')}\n\n"
+            f"<b>Monitoring:</b>\n"
+            f"{symbols_text}\n\n"
+            f"{EMOJI['TELEGRAM']} <i>Bot is now active</i>"
+        )
         self.queue_message(message)
 
     def send_dca_stop(self, stats: Dict):
@@ -229,23 +214,21 @@ class TelegramBot:
         if not self.enabled:
             return
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{EMOJI['STOP']} <b>DCA DAY TRADING STOPPED</b> {EMOJI['STOP']}
-{separator}
+        separator = "=" * 30
 
-<b>Session Summary:</b>
-• Total PnL: ${stats.get('total_pnl', 0):.2f}
-• Daily PnL: ${stats.get('daily_pnl', 0):.2f}
-• DCA Entries: {stats.get('dca_entries', 0)}
-• DCA Exits: {stats.get('dca_exits', 0)}
-• Active Positions: {stats.get('active_positions', 0)}
-• Completed Trades: {stats.get('completed_trades', 0)}
-• Win Rate: {stats.get('win_rate', 0)*100:.1f}%
-
-{EMOJI['CLOCK']} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
+        message = (
+            f"{EMOJI['STOP']} <b>DCA DAY TRADING STOPPED</b> {EMOJI['STOP']}\n"
+            f"{separator}\n\n"
+            f"<b>Session Summary:</b>\n"
+            f"• Total PnL: ${stats.get('total_pnl', 0):.2f}\n"
+            f"• Daily PnL: ${stats.get('daily_pnl', 0):.2f}\n"
+            f"• DCA Entries: {stats.get('dca_entries', 0)}\n"
+            f"• DCA Exits: {stats.get('dca_exits', 0)}\n"
+            f"• Active Positions: {stats.get('active_positions', 0)}\n"
+            f"• Completed Trades: {stats.get('completed_trades', 0)}\n"
+            f"• Win Rate: {stats.get('win_rate', 0)*100:.1f}%\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         self.queue_message(message)
 
     def send_dca_daily_summary(self, summary: Dict):
@@ -254,28 +237,24 @@ class TelegramBot:
             return
 
         pnl_emoji = EMOJI['PROFIT'] if summary.get('total_pnl', 0) > 0 else EMOJI['LOSS']
+        separator = "=" * 30
+        symbols_traded = ", ".join(summary.get('symbols_traded', [])[:3])
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{pnl_emoji} <b>DCA DAILY SUMMARY</b> {pnl_emoji}
-{separator}
-
-<b>Date:</b> {datetime.now().strftime('%Y-%m-%d')}
-
-<b>Performance:</b>
-• Total PnL: ${summary.get('total_pnl', 0):.2f}
-• Total Trades: {summary.get('total_trades', 0)}
-• Winning Trades: {summary.get('winning_trades', 0)}
-• Losing Trades: {summary.get('losing_trades', 0)}
-• Win Rate: {summary.get('win_rate', 0)*100:.1f}%
-
-<b>Activity:</b>
-• Symbols Traded: {', '.join(summary.get('symbols_traded', []))[:3]}
-• DCA Entries: {summary.get('dca_entries', 0)}
-
-{EMOJI['TARGET']} <i>See you tomorrow!</i>
-"""
+        message = (
+            f"{pnl_emoji} <b>DCA DAILY SUMMARY</b> {pnl_emoji}\n"
+            f"{separator}\n\n"
+            f"<b>Date:</b> {datetime.now().strftime('%Y-%m-%d')}\n\n"
+            f"<b>Performance:</b>\n"
+            f"• Total PnL: ${summary.get('total_pnl', 0):.2f}\n"
+            f"• Total Trades: {summary.get('total_trades', 0)}\n"
+            f"• Winning Trades: {summary.get('winning_trades', 0)}\n"
+            f"• Losing Trades: {summary.get('losing_trades', 0)}\n"
+            f"• Win Rate: {summary.get('win_rate', 0)*100:.1f}%\n\n"
+            f"<b>Activity:</b>\n"
+            f"• Symbols Traded: {symbols_traded}\n"
+            f"• DCA Entries: {summary.get('dca_entries', 0)}\n\n"
+            f"{EMOJI['TARGET']} <i>See you tomorrow!</i>"
+        )
         self.queue_message(message)
 
     def send_error(self, error: str, context: Optional[Dict] = None):
@@ -283,17 +262,15 @@ class TelegramBot:
         if not self.enabled:
             return
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{EMOJI['WARNING']} <b>DCA ERROR</b> {EMOJI['WARNING']}
-{separator}
-
-<b>Error:</b> {error}
-<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}
-"""
+        separator = "=" * 30
+        message = (
+            f"{EMOJI['WARNING']} <b>DCA ERROR</b> {EMOJI['WARNING']}\n"
+            f"{separator}\n\n"
+            f"<b>Error:</b> {error}\n"
+            f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}"
+        )
         if context:
-            message += f"\n<b>Context:</b>\n{str(context)[:200]}"
+            message += f"\n\n<b>Context:</b>\n{str(context)[:200]}"
 
         self.queue_message(message)
 
@@ -310,17 +287,14 @@ class TelegramBot:
             "ERROR": EMOJI['ERROR'],
         }
         emoji = emoji_map.get(alert_type, EMOJI['INFO'])
+        separator = "=" * 30
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{emoji} <b>{title}</b> {emoji}
-{separator}
-
-{message_body}
-
-{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}
-"""
+        message = (
+            f"{emoji} <b>{title}</b> {emoji}\n"
+            f"{separator}\n\n"
+            f"{message_body}\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}"
+        )
         self.queue_message(message)
 
     def send_health_check(self, status: Dict):
@@ -329,21 +303,18 @@ class TelegramBot:
             return
 
         health_emoji = EMOJI['HEALTH'] if status.get('status') == 'healthy' else EMOJI['WARNING']
+        separator = "=" * 30
 
-        # Fixed: Removed backslash in f-string
-        separator = "━" * 23
-        message = f"""
-{health_emoji} <b>DCA HEALTH CHECK</b> {health_emoji}
-{separator}
-
-<b>Status:</b> {status.get('status', 'unknown')}
-<b>Active Positions:</b> {status.get('active_positions', 0)}
-<b>Daily PnL:</b> ${status.get('daily_pnl', 0):.2f}
-<b>Total PnL:</b> ${status.get('total_pnl', 0):.2f}
-<b>Uptime:</b> {status.get('uptime', 'N/A')}
-
-{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}
-"""
+        message = (
+            f"{health_emoji} <b>DCA HEALTH CHECK</b> {health_emoji}\n"
+            f"{separator}\n\n"
+            f"<b>Status:</b> {status.get('status', 'unknown')}\n"
+            f"<b>Active Positions:</b> {status.get('active_positions', 0)}\n"
+            f"<b>Daily PnL:</b> ${status.get('daily_pnl', 0):.2f}\n"
+            f"<b>Total PnL:</b> ${status.get('total_pnl', 0):.2f}\n"
+            f"<b>Uptime:</b> {status.get('uptime', 'N/A')}\n\n"
+            f"{EMOJI['CLOCK']} {datetime.now().strftime('%H:%M:%S')}"
+        )
         self.queue_message(message)
 
     def shutdown(self):
