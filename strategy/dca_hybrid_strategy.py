@@ -1,7 +1,7 @@
 """
 Hybrid DCA Day Trading Strategy
 Combines Super TDI + Bollinger Bands + Multi-Timeframe for DCA entries
-Version: 1.0.4 - Enhanced with ATR-based spacing, trailing stop, and position management
+Version: 1.0.5 - Fixed ATR calculation and improved error handling
 """
 
 import sys
@@ -77,9 +77,9 @@ class DCAPosition:
     direction_reason: str = ""
     last_dca_time: Optional[datetime] = None
     dca_count: int = 1
-    # NEW: Trailing stop tracking
-    highest_price: float = 0.0  # For trailing stop (LONG)
-    lowest_price: float = float('inf')  # For trailing stop (SHORT)
+    # Trailing stop tracking
+    highest_price: float = 0.0
+    lowest_price: float = float('inf')
     trailing_stop_price: float = 0.0
     trailing_activated: bool = False
 
@@ -121,11 +121,11 @@ class DCAHybridStrategy:
         # DCA Time Delay
         self.MIN_DCA_INTERVAL_SECONDS = 300
 
-        # NEW: Trailing Stop Configuration
+        # Trailing Stop Configuration
         self.TRAILING_STOP_PERCENT = config.dca.trailing_stop_percent
         self.TRAILING_ACTIVATION_PCT = config.dca.trailing_activation_pct
 
-        # NEW: Position Limits
+        # Position Limits
         self.MAX_ACTIVE_POSITIONS = config.dca.max_active_positions
 
         # State
@@ -137,7 +137,7 @@ class DCAHybridStrategy:
         self.daily_losses = 0
         self.market_context: Dict[str, Dict] = {}
 
-        dca_logger.info(f"{EMOJI['START']} DCA_HYBRID: Initialized (v1.0.4)")
+        dca_logger.info(f"{EMOJI['START']} DCA_HYBRID: Initialized (v1.0.5)")
         dca_logger.info(f"  - DCA Levels: {self.DCA_LEVELS}")
         dca_logger.info(f"  - Stop Loss: {self.STOP_LOSS_PERCENT*100:.1f}%")
         dca_logger.info(f"  - Trailing Stop: {self.TRAILING_STOP_PERCENT*100:.1f}% (activates at {self.TRAILING_ACTIVATION_PCT*100:.1f}%)")
@@ -145,7 +145,7 @@ class DCAHybridStrategy:
         dca_logger.info(f"  - Exit Time: {self.EXIT_HOUR:02d}:{self.EXIT_MINUTE:02d} UTC")
 
     def can_open_new_position(self) -> bool:
-        """Check if we can open a new position (respects max positions limit)."""
+        """Check if we can open a new position."""
         active_count = len(self.active_positions)
         if active_count >= self.MAX_ACTIVE_POSITIONS:
             dca_logger.debug(f"Max positions reached: {active_count}/{self.MAX_ACTIVE_POSITIONS}")
@@ -162,7 +162,7 @@ class DCAHybridStrategy:
             'reason': '', 'tdi_level': 50.0,
             'tdi_zone': 'NEUTRAL', 'bb_position': 0.5,
             'volume_ratio': 1.0,
-            'atr': 0.0,  # NEW: ATR for dynamic sizing
+            'atr': 0.0,  # Default ATR
         }
 
         if not df_4h.empty and len(df_4h) >= 10:
@@ -186,8 +186,8 @@ class DCAHybridStrategy:
             result['ltf_tdi'] = ltf_analysis.get('tdi_level', 50)
             result['ltf_zone'] = ltf_analysis.get('tdi_zone', 'NEUTRAL')
             result['ltf_bb_position'] = ltf_analysis.get('bb_position', 0.5)
-            # NEW: Get ATR from 15M timeframe
-            result['atr'] = ltf_analysis.get('atr', current_price * 0.01)
+            # Get ATR from 15M timeframe with fallback
+            result['atr'] = ltf_analysis.get('atr', 0.0)
 
         direction_result = self._detect_direction(result)
         result.update(direction_result)
@@ -215,8 +215,8 @@ class DCAHybridStrategy:
             ha_color = last.get('ha_color', 0)
             ha_prev_color = prev.get('ha_color', 0)
             volume_ratio = last.get('volume_ratio', 1)
-
-            # NEW: Get ATR
+            
+            # Get ATR
             atr = last.get('atr', 0)
 
             if tdi_slow == 50 and 'rsi' in last:
@@ -365,10 +365,9 @@ class DCAHybridStrategy:
         atr = 0
         if not df_15m.empty and 'atr' in df_15m.columns:
             atr = df_15m['atr'].iloc[-1]
-
+        
         # Calculate dynamic spacing
         if atr and atr > 0:
-            # Use ATR for spacing, but keep within min/max bounds
             spacing = max(atr / current_price, 0.005)  # Minimum 0.5%
             spacing = min(spacing, 0.02)  # Maximum 2%
         else:
@@ -392,7 +391,6 @@ class DCAHybridStrategy:
         """Check if we should enter a DCA position."""
         now = datetime.now()
 
-        # Check position limit before anything else
         if not self.can_open_new_position() and symbol not in self.active_positions:
             return self._no_entry(f"Max positions reached ({self.MAX_ACTIVE_POSITIONS})")
 
@@ -451,7 +449,6 @@ class DCAHybridStrategy:
         if direction not in ['LONG', 'SHORT']:
             return self._no_entry(f'No clear direction: {direction}')
 
-        # ENTER AT CURRENT PRICE
         dca_logger.info(f"{symbol}: New {direction} position at current price ${current_price:.4f}")
         return {
             'should_enter': True,
@@ -484,7 +481,6 @@ class DCAHybridStrategy:
         if position.direction == "LONG":
             if current_price > position.highest_price:
                 position.highest_price = current_price
-                # Update trailing stop
                 if position.highest_price > position.entry_price * (1 + self.TRAILING_ACTIVATION_PCT):
                     position.trailing_activated = True
                     position.trailing_stop_price = position.highest_price * (1 - self.TRAILING_STOP_PERCENT)
@@ -497,7 +493,7 @@ class DCAHybridStrategy:
                     position.trailing_stop_price = position.lowest_price * (1 + self.TRAILING_STOP_PERCENT)
                     dca_logger.debug(f"{symbol}: Trailing stop updated to ${position.trailing_stop_price:.4f}")
 
-        # Check trailing stop (NEW)
+        # Check trailing stop
         if position.trailing_activated:
             if position.direction == "LONG" and current_price <= position.trailing_stop_price:
                 dca_logger.info(f"{EMOJI['TRAILING']} {symbol}: Trailing stop hit at ${current_price:.4f}")
@@ -617,7 +613,6 @@ class DCAHybridStrategy:
                     entry_score=market_context.get('confidence', 0) * 100,
                     last_dca_time=now,
                     dca_count=1,
-                    # NEW: Trailing stop initialization
                     highest_price=entry_price,
                     lowest_price=entry_price,
                     trailing_stop_price=0.0,
@@ -707,10 +702,10 @@ class DCAHybridStrategy:
         """Get detailed summary of a position."""
         if symbol not in self.active_positions:
             return None
-
+        
         position = self.active_positions[symbol]
         avg_entry = position.total_cost / position.quantity if position.quantity > 0 else 0
-
+        
         return {
             'symbol': symbol,
             'direction': position.direction,
