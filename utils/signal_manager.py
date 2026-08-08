@@ -1,7 +1,7 @@
 """
 Signal Manager for DCA Day Trading
 Manages trading signals with deduplication, expiration, and priority
-Version: 1.0.2 - Enhanced with DCA Setup tracking and performance metrics
+Version: 1.0.3 - Fixed update_dca_setup_status method signature
 """
 
 import logging
@@ -108,7 +108,7 @@ class SignalManager:
             "dca_setups_completed": 0,
         }
 
-        logger.info("SignalManager initialized (v1.0.2)")
+        logger.info("SignalManager initialized (v1.0.3)")
 
     def create_signal(self, symbol: str, signal_type: SignalType,
                       direction: str, price: float, quantity: float,
@@ -403,15 +403,23 @@ class SignalManager:
 
     def update_dca_setup_status(self, symbol: str, status: str,
                                  exit_price: Optional[float] = None,
-                                 pnl: Optional[float] = None) -> bool:
+                                 pnl: Optional[float] = None,
+                                 entry_price: Optional[float] = None) -> bool:
+        """Update DCA setup status with optional entry_price parameter."""
         with self._lock:
             if symbol not in self._dca_setups:
                 return False
 
             self._dca_setups[symbol]["status"] = status
+            
+            if entry_price is not None:
+                self._dca_setups[symbol]["entry_price"] = entry_price
+                self._dca_setups[symbol]["entry_time"] = datetime.now()
+            
             if exit_price is not None:
                 self._dca_setups[symbol]["exit_price"] = exit_price
                 self._dca_setups[symbol]["exit_time"] = datetime.now()
+                
             if pnl is not None:
                 self._dca_setups[symbol]["pnl"] = pnl
 
