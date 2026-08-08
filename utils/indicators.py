@@ -229,18 +229,6 @@ class Indicators:
             result['stoch_k'] = 100 * ((result['close'] - low_14) / (high_14 - low_14))
             result['stoch_d'] = result['stoch_k'].rolling(window=3).mean()
 
-            # Average Directional Index (ADX) - Simplified
-            high_diff = result['high'].diff()
-            low_diff = -result['low'].diff()
-            plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0)
-            minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0)
-            atr = result['high'].rolling(window=14).apply(
-                lambda x: x.max() - x.min() if len(x) > 0 else 0
-            )
-
-            # ADX calculation (simplified for speed)
-            result['adx'] = 25  # Placeholder for simplicity
-
         except Exception as e:
             logger.error(f"Error calculating momentum oscillators: {e}")
 
@@ -346,6 +334,7 @@ class Indicators:
         Calculate all indicators in one call.
         """
         try:
+            # Calculate Heikin-Ashi FIRST
             df = calculate_heikin_ashi(df)
             df = Indicators.calculate_tdi(df)
             df = Indicators.calculate_bollinger_bands(df)

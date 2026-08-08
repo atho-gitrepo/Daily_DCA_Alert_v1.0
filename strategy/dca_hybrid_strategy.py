@@ -181,42 +181,44 @@ class DCAHybridStrategy:
         return result
 
     def _analyze_timeframe(self, df: pd.DataFrame, tf_name: str) -> Dict[str, Any]:
-        try:
-            df = Indicators.calculate_tdi(df)
-            df = Indicators.calculate_bollinger_bands(df, period=34, dev=1.750)
-            df = calculate_heikin_ashi(df)
+    try:
+        # Calculate indicators with HA first
+        df = Indicators.calculate_all_indicators(df)
 
-            if df.empty or len(df) < 20:
-                return {'trend': 'NEUTRAL', 'tdi_level': 50, 'tdi_zone': 'NEUTRAL'}
-
-            last = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else last
-
-            tdi_slow = last.get('tdi_slow_ma', 50)
-            tdi_fast = last.get('tdi_fast_ma', 50)
-            tdi_prev = prev.get('tdi_slow_ma', 50)
-            bb_position = last.get('bb_position', 0.5)
-            bb_width = last.get('bb_width_percent', 0)
-            ha_color = last.get('ha_color', 0)
-            ha_prev_color = prev.get('ha_color', 0)
-            volume_ratio = last.get('volume_ratio', 1)
-
-            trend = self._get_trend(tdi_slow, tdi_fast, tdi_prev, ha_color, ha_prev_color)
-            tdi_zone = self._get_tdi_zone(tdi_slow)
-
-            return {
-                'trend': trend,
-                'tdi_level': tdi_slow,
-                'tdi_fast': tdi_fast,
-                'tdi_zone': tdi_zone,
-                'bb_position': bb_position,
-                'bb_width': bb_width,
-                'ha_color': ha_color,
-                'volume_ratio': volume_ratio,
-            }
-        except Exception as e:
-            dca_logger.error(f"Error analyzing {tf_name}: {e}")
+        if df.empty or len(df) < 20:
             return {'trend': 'NEUTRAL', 'tdi_level': 50, 'tdi_zone': 'NEUTRAL'}
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
+
+        # Get TDI values with fallbacks
+        tdi_slow = last.get('tdi_slow_ma', 50)
+        tdi_fast = last.get('tdi_fast_ma', 50)
+        tdi_prev = prev.get('tdi_slow_ma', 50)
+        bb_position = last.get('bb_position', 0.5)
+        bb_width = last.get('bb_width_percent', 0)
+
+        # Get HA values with fallbacks
+        ha_color = last.get('ha_color', 0)
+        ha_prev_color = prev.get('ha_color', 0)
+        volume_ratio = last.get('volume_ratio', 1)
+
+        trend = self._get_trend(tdi_slow, tdi_fast, tdi_prev, ha_color, ha_prev_color)
+        tdi_zone = self._get_tdi_zone(tdi_slow)
+
+        return {
+            'trend': trend,
+            'tdi_level': tdi_slow,
+            'tdi_fast': tdi_fast,
+            'tdi_zone': tdi_zone,
+            'bb_position': bb_position,
+            'bb_width': bb_width,
+            'ha_color': ha_color,
+            'volume_ratio': volume_ratio,
+        }
+    except Exception as e:
+        dca_logger.error(f"Error analyzing {tf_name}: {e}")
+        return {'trend': 'NEUTRAL', 'tdi_level': 50, 'tdi_zone': 'NEUTRAL'}
 
     def _get_trend(self, tdi_slow: float, tdi_fast: float, tdi_prev: float,
                    ha_color: int, ha_prev_color: int) -> str:
