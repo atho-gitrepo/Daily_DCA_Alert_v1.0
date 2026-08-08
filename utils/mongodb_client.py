@@ -74,30 +74,30 @@ class MongoDBClient:
             self.enabled = False
 
     def _create_indexes(self):
-        """Create necessary indexes."""
-        try:
-            if self.active_collection:
-                self.active_collection.create_index("symbol", unique=False)
-                self.active_collection.create_index("entry_time")
-                self.active_collection.create_index("status")
+    """Create necessary indexes."""
+    try:
+        if self.active_collection is not None:
+            self.active_collection.create_index("symbol", unique=False)
+            self.active_collection.create_index("entry_time")
+            self.active_collection.create_index("status")
 
-            if self.resolved_collection:
-                self.resolved_collection.create_index("symbol")
-                self.resolved_collection.create_index("exit_time")
-                self.resolved_collection.create_index("entry_time")
-                self.resolved_collection.create_index("status")
+        if self.resolved_collection is not None:
+            self.resolved_collection.create_index("symbol")
+            self.resolved_collection.create_index("exit_time")
+            self.resolved_collection.create_index("entry_time")
+            self.resolved_collection.create_index("status")
 
-            if self.trades_collection:
-                self.trades_collection.create_index("symbol")
-                self.trades_collection.create_index("exit_time")
-                self.trades_collection.create_index("entry_time")
-                self.trades_collection.create_index("direction")
+        if self.trades_collection is not None:
+            self.trades_collection.create_index("symbol")
+            self.trades_collection.create_index("exit_time")
+            self.trades_collection.create_index("entry_time")
+            self.trades_collection.create_index("direction")
 
-            if self.stats_collection:
-                self.stats_collection.create_index("date", unique=True)
+        if self.stats_collection is not None:
+            self.stats_collection.create_index("date", unique=True)
 
-        except Exception as e:
-            logger.warning(f"Index creation issue: {e}")
+    except Exception as e:
+        logger.warning(f"Index creation issue: {e}")
 
     def _parse_document(self, doc: Dict) -> Dict:
         """Parse MongoDB document with ObjectId to string."""
