@@ -98,6 +98,7 @@ bot_stats: Dict[str, Any] = {
         "active": 0,
         "total_pnl": 0.0,
     },
+    "last_status_sent": None,  # Track when last status was sent
 }
 
 # ========== POSITION SIZE ==========
@@ -107,6 +108,11 @@ POSITION_SIZE_USD = config.dca.position_size_usd
 MAX_PENDING_SIGNALS_PER_SYMBOL = 2
 SIGNAL_EXPIRY_SECONDS = 120
 SIGNAL_COOLDOWN_SECONDS = 60
+
+# ========== STATUS REPORTING ==========
+# Send status once per day at a specific time (e.g., 00:00 UTC)
+STATUS_HOUR = 0  # Midnight UTC
+STATUS_MINUTE = 5  # 5 minutes past midnight
 
 
 # ==================== BINANCE CLIENT ====================
@@ -280,21 +286,25 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
         # ===== 1. FETCH ALL TIMEFRAMES =====
         current_price = client.get_current_price(symbol)
         if current_price is None:
+            main_logger.debug(f"⚠️ No price for {symbol}")
             return {"action": "none", "reason": "No price"}
 
         # 4H data (HTF)
         df_4h = client.get_historical_klines(symbol, interval="4h", limit=50)
         if df_4h.empty or len(df_4h) < 20:
+            main_logger.debug(f"⚠️ Insufficient 4H data for {symbol}")
             return {"action": "none", "reason": "Insufficient 4H data"}
 
         # 1H data (MTF)
         df_1h = client.get_historical_klines(symbol, interval="1h", limit=100)
         if df_1h.empty or len(df_1h) < 20:
+            main_logger.debug(f"⚠️ Insufficient 1H data for {symbol}")
             return {"action": "none", "reason": "Insufficient 1H data"}
 
         # 15M data (LTF)
         df_15m = client.get_historical_klines(symbol, interval="15m", limit=200)
         if df_15m.empty or len(df_15m) < 20:
+            main_logger.debug(f"⚠️ Insufficient 15M data for {symbol}")
             return {"action": "none", "reason": "Insufficient 15M data"}
 
         # ===== 2. MULTI-TIMEFRAME ANALYSIS =====
@@ -304,6 +314,21 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
 
         direction = market_context.get('direction', 'NEUTRAL')
         confidence = market_context.get('confidence', 0)
+        htf_trend = market_context.get('htf_trend', 'NEUTRAL')
+        mtf_trend = market_context.get('mtf_trend', 'NEUTRAL')
+        ltf_trend = market_context.get('ltf_trend', 'NEUTRAL')
+        tdi_level = market_context.get('tdi_level', 50)
+        tdi_zone = market_context.get('tdi_zone', 'NEUTRAL')
+        bb_position = market_context.get('bb_position', 0.5)
+
+        # Log detailed signal analysis
+        main_logger.info(
+            f"🔍 Signal Analysis - {symbol}: "
+            f"Direction={direction} ({confidence*100:.1f}%), "
+            f"HTF={htf_trend}, MTF={mtf_trend}, LTF={ltf_trend}, "
+            f"TDI={tdi_level:.1f} ({tdi_zone}), BB={bb_position:.2f}, "
+            f"Price=${current_price:.4f}"
+        )
 
         # ===== 3. CHECK ACTIVE POSITION =====
         if symbol in dca_strategy.active_positions:
@@ -311,6 +336,11 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
             exit_check = dca_strategy.check_exit(symbol, current_price, datetime.now())
 
             if exit_check['should_exit']:
+                main_logger.info(
+                    f"🚪 Exit signal detected for {symbol}: {exit_check['reason']} "
+                    f"@ ${exit_check['exit_price']:.4f} ({exit_check['sell_percent']*100:.0f}%)"
+                )
+
                 # Create exit signal
                 exit_signal = create_dca_signal(
                     symbol=symbol,
@@ -389,9 +419,15 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
             entry_check = dca_strategy.should_enter_dca(symbol, current_price, df_15m, market_context)
 
             if entry_check['should_enter']:
+                main_logger.info(
+                    f"📊 DCA entry condition met for {symbol}: "
+                    f"Level {entry_check['level']} @ ${entry_check['entry_price']:.4f} - {entry_check['reason']}"
+                )
+
                 # Check if we can generate a signal
                 can_gen, reason = can_generate_signal(symbol)
                 if not can_gen:
+                    main_logger.debug(f"⏳ Signal blocked for {symbol}: {reason}")
                     return {"action": "pending", "reason": reason}
 
                 # Create entry signal
@@ -468,11 +504,17 @@ def process_dca_symbol(symbol: str, client, state: Dict) -> Dict:
             # Check if we can generate a signal
             can_gen, reason = can_generate_signal(symbol)
             if not can_gen:
+                main_logger.debug(f"⏳ New position blocked for {symbol}: {reason}")
                 return {"action": "pending", "reason": reason}
 
             entry_check = dca_strategy.should_enter_dca(symbol, current_price, df_15m, market_context)
 
             if entry_check['should_enter']:
+                main_logger.info(
+                    f"🆕 New position detected for {symbol}: "
+                    f"{entry_check['direction']} @ ${entry_check['entry_price']:.4f} - {entry_check['reason']}"
+                )
+
                 # Create entry signal
                 entry_signal = create_dca_signal(
                     symbol=symbol,
@@ -603,6 +645,60 @@ def send_dca_status():
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
     telegram_bot.send_message(message)
+    main_logger.info(f"{EMOJI['TELEGRAM']} Daily status sent to Telegram")
+
+
+def should_send_daily_status() -> bool:
+    """Check if we should send the daily status (once per day)."""
+    now = datetime.now()
+
+    # Check if it's the right time (midnight + 5 minutes)
+    if now.hour != STATUS_HOUR or now.minute != STATUS_MINUTE:
+        return False
+
+    # Check if we already sent status today
+    today = now.date()
+    if bot_stats.get('last_status_date') == today:
+        return False
+
+    return True
+
+
+def send_daily_performance_summary():
+    """Send daily performance summary to Telegram."""
+    if not telegram_bot.enabled:
+        return
+
+    stats = dca_strategy.get_daily_stats()
+
+    message = f"""
+📊 <b>DAILY PERFORMANCE SUMMARY</b>
+━━━━━━━━━━━━━━━━━━━━━
+
+<b>Date:</b> {datetime.now().strftime('%Y-%m-%d')}
+
+<b>Performance:</b>
+• Daily PnL: <b>${stats['daily_pnl']:.2f}</b>
+• Total Trades: <b>{stats['daily_trades']}</b>
+• Win Rate: <b>{stats['win_rate']*100:.1f}%</b>
+• Wins: <b>{stats['daily_wins']}</b>
+• Losses: <b>{stats['daily_losses']}</b>
+
+<b>Positions:</b>
+• Active: <b>{stats['active_positions']}</b>
+• Completed: <b>{stats['completed_positions']}</b>
+• Symbols: {', '.join(stats['active_symbols']) if stats['active_symbols'] else 'None'}
+
+<b>Signals:</b>
+• Generated: <b>{bot_stats['signals_generated']}</b>
+• Executed: <b>{bot_stats['signals_executed']}</b>
+• Rejected: <b>{bot_stats['signals_rejected']}</b>
+• Expired: <b>{bot_stats['signals_expired']}</b>
+
+🕐 {datetime.now().strftime('%H:%M:%S')}
+"""
+    telegram_bot.send_message(message)
+    main_logger.info(f"{EMOJI['TELEGRAM']} Daily performance summary sent")
 
 
 # ==================== MAIN LOOP ====================
@@ -639,6 +735,10 @@ def run_processing_loop():
     main_logger.info(f"{EMOJI['INFO']} Stop Loss: {dca_strategy.STOP_LOSS_PERCENT*100:.1f}%")
     main_logger.info(f"{EMOJI['INFO']} Exit Time: {dca_strategy.EXIT_HOUR:02d}:{dca_strategy.EXIT_MINUTE:02d} UTC")
     main_logger.info(f"{EMOJI['SIGNAL']} Signal Manager: Active")
+    main_logger.info(f"{EMOJI['INFO']} Status Reports: Daily at {STATUS_HOUR:02d}:{STATUS_MINUTE:02d} UTC")
+
+    cycle_count = 0
+    last_status_date = None
 
     while running:
         try:
@@ -665,16 +765,12 @@ def run_processing_loop():
             # Update Signal Manager stats
             check_signal_manager_status()
 
-            # Send status every 10 cycles
-            if bot_stats['cycles_completed'] % 10 == 0:
+            # Send daily status (once per day)
+            if should_send_daily_status():
                 send_dca_status()
-
-                # Log signal manager status
-                active_count = len(signal_manager.active_signals)
-                pending_count = len(signal_manager.get_pending_signals())
-                main_logger.info(
-                    f"{EMOJI['SIGNAL']} Signal Manager: {active_count} active, {pending_count} pending"
-                )
+                send_daily_performance_summary()
+                bot_stats['last_status_date'] = datetime.now().date()
+                main_logger.info(f"{EMOJI['CLOCK']} Daily status sent for {datetime.now().strftime('%Y-%m-%d')}")
 
             # Check if it's end of day (after exit hour)
             now = datetime.now()
