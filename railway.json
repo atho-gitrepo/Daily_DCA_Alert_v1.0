@@ -1,0 +1,42 @@
+{
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "startCommand": "python main.py",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 10,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  },
+  "environments": {
+    "production": {
+      "variables": {
+        "ENVIRONMENT": "production",
+        "RUN_MODE": "PRODUCTION",
+        "LOG_LEVEL": "INFO",
+        "DEBUG": "false",
+        "BINANCE_TESTNET": "false"
+      }
+    },
+    "staging": {
+      "variables": {
+        "ENVIRONMENT": "staging",
+        "RUN_MODE": "DEMO",
+        "LOG_LEVEL": "DEBUG",
+        "DEBUG": "true",
+        "BINANCE_TESTNET": "true"
+      }
+    },
+    "development": {
+      "variables": {
+        "ENVIRONMENT": "development",
+        "RUN_MODE": "DEMO",
+        "LOG_LEVEL": "DEBUG",
+        "DEBUG": "true",
+        "BINANCE_TESTNET": "true"
+      }
+    }
+  }
+}

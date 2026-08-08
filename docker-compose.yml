@@ -1,0 +1,129 @@
+# ============================================================
+# DCA Day Trading Bot - Docker Compose
+# Version: 1.0.0
+# ============================================================
+
+version: '3.8'
+
+services:
+  # ---------- DCA Trading Bot ----------
+  dca-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dca-trading-bot
+    restart: unless-stopped
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - BINANCE_TESTNET=${BINANCE_TESTNET:-true}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - MONGODB_URI=${MONGODB_URI}
+      - MONGODB_DB=${MONGODB_DB:-trading_bot}
+      - DCA_LEVELS=${DCA_LEVELS:-3}
+      - DCA_SPACING=${DCA_SPACING:-0.002}
+      - POSITION_SIZE_USD=${POSITION_SIZE_USD:-50}
+      - STOP_LOSS_PERCENT=${STOP_LOSS_PERCENT:-0.010}
+      - EXIT_HOUR=${EXIT_HOUR:-21}
+      - EXIT_MINUTE=${EXIT_MINUTE:-0}
+      - SYMBOLS=${SYMBOLS:-BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT}
+      - TIMEFRAME=${TIMEFRAME:-15m}
+      - POLLING_INTERVAL_SECONDS=${POLLING_INTERVAL_SECONDS:-30}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - RUN_MODE=${RUN_MODE:-DEMO}
+      - PORT=8080
+      - HOST=0.0.0.0
+    ports:
+      - "${BOT_PORT:-8080}:8080"
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    networks:
+      - dca-network
+    depends_on:
+      - mongodb
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------- MongoDB ----------
+  mongodb:
+    image: mongo:7.0
+    container_name: dca-mongodb
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+      - MONGO_INITDB_DATABASE=${MONGODB_DB:-trading_bot}
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - dca-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------- Redis (Optional - for caching) ----------
+  redis:
+    image: redis:7.2-alpine
+    container_name: dca-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - dca-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------- Grafana (Optional - for monitoring) ----------
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: dca-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - dca-network
+    depends_on:
+      - dca-bot
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ---------- Networks ----------
+networks:
+  dca-network:
+    driver: bridge
+
+# ---------- Volumes ----------
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  grafana_data:
+    driver: local

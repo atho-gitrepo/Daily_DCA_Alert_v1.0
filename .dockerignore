@@ -1,0 +1,99 @@
+# ============================================================
+# DOCKER IGNORE - Exclude unnecessary files from build
+# ============================================================
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.env.*
+*.pem
+*.key
+*.crt
+firebase-credentials.json
+service-account.json
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Data
+data/
+*.db
+*.sqlite
+*.db-shm
+*.db-wal
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+.svn/
+.hg/
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose*.yml
+
+# CI/CD
+.github/
+.gitlab/
+.azure/
+.travis.yml
+
+# Documentation
+README.md
+LICENSE
+CHANGELOG.md
+docs/
+*.md
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Others
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z

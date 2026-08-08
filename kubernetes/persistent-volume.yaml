@@ -1,0 +1,35 @@
+# ============================================================
+# DCA Day Trading Bot - Persistent Volumes
+# Version: 1.0.0
+# ============================================================
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dca-logs-pvc
+  namespace: trading
+  labels:
+    app: dca-trading-bot
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dca-data-pvc
+  namespace: trading
+  labels:
+    app: dca-trading-bot
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: standard

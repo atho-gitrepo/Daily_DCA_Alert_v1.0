@@ -1,0 +1,61 @@
+# ============================================================
+# DCA Day Trading Bot - ConfigMap
+# Version: 1.0.0
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dca-trading-config
+  namespace: trading
+  labels:
+    app: dca-trading-bot
+data:
+  # Market Configuration
+  SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT"
+  TIMEFRAME: "15m"
+  HTF_TIMEFRAME: "4h"
+  MTF_TIMEFRAME: "1h"
+  LTF_TIMEFRAME: "15m"
+  POLLING_INTERVAL_SECONDS: "30"
+
+  # DCA Strategy Configuration
+  DCA_LEVELS: "3"
+  DCA_SPACING: "0.002"
+  POSITION_SIZE_USD: "50"
+  STOP_LOSS_PERCENT: "0.010"
+  TP_LEVEL_1: "0.003"
+  TP_LEVEL_2: "0.005"
+  TP_LEVEL_3: "0.007"
+  EXIT_HOUR: "21"
+  EXIT_MINUTE: "0"
+  MINUTES_BEFORE_EXIT: "30"
+
+  # TDI Thresholds
+  TDI_OVERSOLD: "25.0"
+  TDI_SOFT_BUY: "35.0"
+  TDI_CENTER: "50.0"
+  TDI_SOFT_SELL: "65.0"
+  TDI_OVERBOUGHT: "75.0"
+
+  # Confidence Thresholds
+  MIN_DIRECTION_CONFIDENCE: "0.55"
+  MIN_HTF_ALIGNMENT: "0.60"
+  MIN_LTF_CONFIRMATION: "0.50"
+
+  # Logging
+  LOG_LEVEL: "INFO"
+  LOG_FILE: "logs/dca_bot.log"
+
+  # Deployment
+  ENVIRONMENT: "production"
+  RUN_MODE: "PRODUCTION"
+  DEBUG: "false"
+  PORT: "8080"
+  HOST: "0.0.0.0"
+
+  # Database
+  MONGODB_DB: "trading_bot_dca"
+  MONGODB_ACTIVE_COLLECTION: "dca_active_positions"
+  MONGODB_RESOLVED_COLLECTION: "dca_resolved_positions"
+  MONGODB_URI: "mongodb://mongo:iIHQindZkcSOQKUsKCZalnvWdcoOMdxX@mongodb.railway.internal:27017"
